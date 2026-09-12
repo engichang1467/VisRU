@@ -7,6 +7,7 @@ nothing, and Phase 2 exists to test whether `verified` predicts correctness.
 """
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,11 +28,30 @@ FAILING = {"disagree", "fail", "inconsistent"}
 # against a detector count qualifies; SAM masks prompted from detector boxes do not,
 # which is why lineage is checked as well as family.
 MODEL_FAMILY = {
-    "view": "vlm", "vlm": "vlm", "read": "vlm", "count": "vlm",
+    "view": "vlm", "vlm": "vlm", "read": "vlm", "count": "vlm", "inspect": "vlm",
     "detect": "owlv2", "segment": "sam2", "ocr": "paddleocr",
     "depth": "depth_anything", "pointmap": "vggt",
     "python": "code", "measure": "code", "geometry": "code",
 }
+UNCLASSIFIED = "unclassified"  # one bucket, so two vague methods are never two models
+AMBIGUOUS = "ambiguous"
+ARTIFACT_REF = re.compile(r"\ba_\d{4,}\b")
+
+
+def method_family(method: str) -> str:
+    """Which model a method ran on, found by naming a tool anywhere in the string.
+
+    Agents describe methods in prose ("view crop a_0008 (pair on lane markings)"), so
+    this looks for a tool name rather than expecting a bare token. Everything it
+    cannot place lands in ONE bucket: giving each unrecognised string its own family
+    would make any two differently-worded methods look independent, which is how a
+    real session got four `verified` claims out of the same VLM reading two crops.
+    """
+    hits = {family for name, family in MODEL_FAMILY.items()
+            if re.search(rf"(?<![a-z]){name}(?![a-z])", method.lower())}
+    if len(hits) == 1:
+        return hits.pop()
+    return AMBIGUOUS if hits else UNCLASSIFIED
 
 
 @dataclass(frozen=True)
@@ -44,9 +64,19 @@ class Check:
 
     @property
     def families(self) -> set[str]:
-        # An unknown method is its own family: assuming independence would be the
-        # generous reading, and the ledger's job is the ungenerous one.
-        return {MODEL_FAMILY.get(m.lower(), f"other:{m.lower()}") for m in self.methods}
+        return {method_family(m) for m in self.methods}
+
+    @property
+    def cited_artifacts(self) -> list[str]:
+        """Artifact IDs named anywhere in the check, including inside method text.
+
+        Agents write methods like "view crop a_0008 (pair on lane markings)", so the
+        IDs that matter for lineage are often in prose rather than in `artifacts`.
+        """
+        found = list(self.artifacts)
+        for text in [*self.methods, self.kind]:
+            found.extend(ARTIFACT_REF.findall(text))
+        return list(dict.fromkeys(found))
 
     def passed(self) -> bool:
         return self.result.lower() in PASSING
@@ -107,9 +137,9 @@ class Ledger:
 
     def _shares_lineage(self, check: Check) -> str | None:
         """Two cited artifacts, one derived from the other, are not two opinions."""
-        for artifact_id in check.artifacts:
-            ancestors = self._ancestors(artifact_id)
-            overlap = ancestors.intersection(check.artifacts)
+        cited = check.cited_artifacts
+        for artifact_id in cited:
+            overlap = self._ancestors(artifact_id).intersection(cited)
             if overlap:
                 return (f"{artifact_id} is derived from {sorted(overlap)[0]}, so they "
                         "share a model's errors")
@@ -118,13 +148,24 @@ class Ledger:
     def check_problems(self, check: Check) -> list[str]:
         """Why this check does not count as passing and independent."""
         problems = []
+        vague = [m for m in check.methods if method_family(m) == UNCLASSIFIED]
+        unclear = [m for m in check.methods if method_family(m) == AMBIGUOUS]
         if len(check.methods) < 2:
             problems.append(f"check {check.kind!r} lists {len(check.methods)} method(s); "
                             "an independent check needs at least two")
+        elif vague:
+            problems.append(
+                f"check {check.kind!r}: cannot tell which model {vague} ran on; name the "
+                f"tool in each method, one of {sorted(set(MODEL_FAMILY))}")
+        elif unclear:
+            problems.append(f"check {check.kind!r}: {unclear} names more than one tool; "
+                            "give one method per tool so independence can be judged")
         elif len(check.families) < 2:
             shared = sorted(check.families)[0]
             problems.append(f"check {check.kind!r} methods {check.methods} all use "
-                            f"{shared}; two methods sharing a model are not independent")
+                            f"{shared}; two methods sharing a model are not independent. "
+                            "Reading the same thing twice with the same model repeats its "
+                            "mistakes — use a different tool, or call the claim supported")
         lineage = self._shares_lineage(check)
         if lineage:
             problems.append(f"check {check.kind!r}: {lineage}")

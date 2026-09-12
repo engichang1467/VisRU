@@ -1,0 +1,12 @@
+# Phase 0 starter set. Target is 30 questions the model fails in a single pass.
+# `answer: null` means UNLABELLED — a person must look and fill it in. The two
+# labelled entries below were confirmed by eye against the source pixels.
+# Never copy an answer out of an agent's own report: grading a run against answers
+# that run produced measures nothing.
+{"id": "q01", "asset": "scene_b_1546479680612194.jpg", "kind": "text", "question": "What store name is on the tall vertical neon sign on the right-hand side of the street?", "answer": "TRADER JOE'S", "accept": ["trader joes", "traders joes"], "note": "fully legible at 2.0x; unreadable in a downsized full frame"}
+{"id": "q02", "asset": "trial_01.mp4", "kind": "text", "question": "What street name is on the blade sign at the intersection the vehicle approaches?", "answer": "Manchester", "note": "legible from roughly frame 100; confirmed at #108"}
+{"id": "q03", "asset": "scene_b_1546479680612194.jpg", "kind": "text", "question": "What store name is on the red-outlined vertical neon sign to the left of the Trader Joe's sign?", "answer": null, "note": "first still shows BED BATH & clearly; confirm the final word before labelling"}
+{"id": "q04", "asset": "scene_b_1546479680612194.jpg", "kind": "text", "question": "What single word is repeated on the illuminated parking garage sign?", "answer": null}
+{"id": "q05", "asset": "scene_b_1546479680612194.jpg", "kind": "text", "question": "Which bank's name and octagon logo appear on the right-hand side?", "answer": null}
+{"id": "q06", "asset": "scene_b_1546479680612194.jpg", "kind": "count", "question": "How many pedestrians are in the roadway itself, not on a sidewalk? Answer with a number only.", "answer": null, "note": "count questions need a stated rule for the roadway boundary before labelling"}
+{"id": "q07", "asset": "trial_01.mp4", "kind": "temporal", "question": "At which frame index does the intersection street-name sign first become readable? Answer with a number only.", "answer": null, "note": "define readable before labelling, or this is not gradeable"}

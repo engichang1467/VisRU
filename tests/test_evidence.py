@@ -263,3 +263,63 @@ def test_overlay_needs_something_to_draw(ctx):
         overlay(ctx, im)
     with pytest.raises(ValueError, match=r"\[x0, y0, x1, y1\]"):
         overlay(ctx, im, boxes=[[1, 2, 3]])
+
+
+# --- regressions from the first real session -----------------------------
+def test_the_same_model_reading_two_images_is_not_a_cross_check(ctx, evidence):
+    """From the first live session: four claims reached `verified` on checks like
+    ["view im_A a_0003 @2.0x", "view im_B a_0033 @2.0x"] — one VLM reading two crops.
+    Free-text method names each became their own family, so any two differently
+    worded strings looked independent. A systematic misreading repeats across frames.
+    """
+    led = _ledger(ctx)
+    claim = _claim(status="verified", evidence=[evidence["view"]],
+                   checks=[{"kind": "cross-frame",
+                            "methods": ["view im_9b9e3fc49d75 a_0003 @2.0x",
+                                        "view im_0f91bbd97367 a_0033 @2.0x"],
+                            "result": "agree"}])
+    assert led.warranted_status(claim) == "supported"
+    assert any("all use vlm" in p for p in led.problems([claim]))
+
+
+def test_prose_methods_still_resolve_to_their_tools(ctx, evidence):
+    """The same session's genuinely independent check must keep working: agents write
+    methods as prose, and view-vs-detector is two models however it is worded."""
+    led = _ledger(ctx)
+    claim = _claim(status="verified", evidence=[evidence["view"], evidence["detect"]],
+                   checks=[{"kind": "visual-vs-detector",
+                            "methods": ["view crop a_0008 (pair + 1 on lane markings)",
+                                        "detect a_0010 (marks 1,2,3 in roadway)"],
+                            "result": "agree"}])
+    assert led.warranted_status(claim) == "verified"
+    assert led.problems([claim]) == []
+
+
+def test_a_method_naming_no_tool_is_rejected(ctx, evidence):
+    led = _ledger(ctx)
+    claim = _claim(status="verified", evidence=[evidence["view"]],
+                   checks=[{"kind": "vibes", "methods": ["looked again", "seemed right"],
+                            "result": "agree"}])
+    problems = led.problems([claim])
+    assert any("cannot tell which model" in p for p in problems), problems
+
+
+def test_a_method_naming_two_tools_is_rejected(ctx, evidence):
+    led = _ledger(ctx)
+    claim = _claim(status="verified", evidence=[evidence["detect"]],
+                   checks=[{"kind": "mixed",
+                            "methods": ["segment prompted from detect boxes", "ocr a_0028"],
+                            "result": "agree"}])
+    assert any("names more than one tool" in p for p in led.problems([claim]))
+
+
+def test_lineage_is_caught_even_when_ids_are_only_in_the_prose(ctx, evidence):
+    """Agents name artifacts inside method text rather than in `artifacts`, and a
+    derived mask must not corroborate the detection it came from either way."""
+    led = _ledger(ctx)
+    claim = _claim(status="verified", evidence=[evidence["detect"]],
+                   checks=[{"kind": "cross_tool",
+                            "methods": [f"detect {evidence['detect']}",
+                                        f"segment {evidence['segment_of_detect']}"],
+                            "result": "agree"}])
+    assert any("derived from" in p for p in led.problems([claim]))

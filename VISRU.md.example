@@ -1,0 +1,18 @@
+# Workspace: visru smoke-test set
+
+- 20 stills `scene_b_*.jpg`, 1920x1280, Waymo front camera, one driving scene, 0.1 s apart.
+- 1 video `trial_01.mp4`, 1920x1280, 198 frames at 10 fps (19.8 s), a different driving scene.
+- No camera intrinsics. All measurements in source-asset pixels.
+
+Tools available through the `visru` MCP server: `list_assets`, `view`, `sample_frames`,
+`detect`, `segment`, `ocr`, `overlay`, `submit_report`. Coordinates in and out of every
+tool are source-asset pixels. Video frames are addressed as `vid_<id>#<frame_index>`.
+
+Rules for this workspace:
+
+1. Start with `list_assets`. Do not guess asset IDs.
+2. Before claiming anything about a small object or text, `view` a box tight enough
+   that the tool reports "at or above inspected_scale".
+3. For video, `sample_frames` first to find the time window, then `view` a frame ref.
+4. Cite the `artifact=a_NNNN` ID from each tool result next to the claim it supports.
+5. Say which assets you did not inspect at native scale.

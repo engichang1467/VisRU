@@ -1,0 +1,17 @@
+# visru.toml — every key here is the built-in default; delete what you do not change.
+
+[model]
+backend = "anthropic"        # or "openai_compatible"
+name = "claude-opus-5"
+max_edge = 2000              # 2576 is the model limit, but >20 images forces 2000
+max_visual_tokens = 4784
+patch = 28
+max_upscale = 2.0
+
+[context]
+max_live_images = 16         # stays under the 20-image threshold
+elide_batch = 8              # elide in batches to keep the cached prefix stable
+compact_at_tokens = 150_000
+
+[coverage]
+inspected_scale = 1.0        # rendered px per source px that counts as "inspected"

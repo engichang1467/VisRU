@@ -204,7 +204,7 @@ Each phase ends with an exit criterion. Do not start the next phase until it pas
 ## Quick start (Phase 0)
 
 ```bash
-git clone <repo-url> visru && cd visru
+git clone git@github.com:engichang1467/VisRU.git && cd visru
 uv venv && source .venv/bin/activate
 uv pip install -e ".[tools]"
 

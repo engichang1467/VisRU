@@ -444,6 +444,87 @@ The system prompt in `agent/prompts/system.md` should state these rules plainly:
 
 ## Evaluation
 
+### Running the Phase 0 exit criterion
+
+The Phase 0 criterion compares two arms on the same questions: the model answering
+from one downsized image, and the model with the tool server. `evals/` holds the
+question schema, the single-pass baseline, and the scorer.
+
+A question set is JSONL, one object per line:
+
+```json
+{"id": "q01", "asset": "scene_b_1546479680612194.jpg",
+ "question": "What does the vertical neon sign on the right read?",
+ "answer": "TRADER JOE'S", "accept": ["trader joes"], "kind": "text"}
+```
+
+`asset` is a filename or an asset ID, `kind` is one of `text`, `count`, `localize`,
+`temporal`, and `accept` lists extra spellings that should grade as correct.
+`answer: null` marks a question nobody has labelled yet. Ground truth has to come
+from a person looking at the pixels — seeding it from an agent's own report grades a
+run against itself and measures nothing.
+
+`questions.example.jsonl` is the tracked starter set. Copy it to
+`questions.jsonl`, which is gitignored, and do your labelling there:
+
+```bash
+cp evals/questions.example.jsonl evals/questions.jsonl
+
+# Validate the file and check every asset resolves in the indexed workspace
+python -m evals.suite evals/questions.jsonl --workspace sample_data
+```
+
+That prints the question count, the breakdown by kind, which questions still need
+ground truth, and any asset name that does not exist in the workspace. It exits
+non-zero on a missing asset, so it works as a pre-flight check before spending API
+calls.
+
+Then run the single-pass control arm:
+
+```bash
+# Render every question's image and count tokens without calling the API
+python -m evals.baseline --workspace sample_data --questions evals/questions.jsonl --dry-run
+
+# The real run, writing evals/runs/baseline_<timestamp>.jsonl
+python -m evals.baseline --workspace sample_data --questions evals/questions.jsonl
+```
+
+Each image question is rendered whole at model resolution, which is what a single
+pass actually sees. Video questions get a contact sheet instead, since "one
+downsized image" has no meaning for a video; the sheet is saved as a workspace
+artifact and its ID is printed at the end, so what the baseline was shown stays
+inspectable. `--model` overrides the model in `visru.toml` and `--frames` sets the
+contact-sheet size.
+
+The tool arm has no runner yet. Run the questions through Claude Code with the MCP
+server attached and record the answers by hand, in the same shape, as
+`evals/runs/tools_<date>.jsonl`:
+
+```json
+{"id": "q01", "arm": "tools", "answer": "TRADER JOE'S"}
+```
+
+Score the arms against each other:
+
+```bash
+python -m evals.score --questions evals/questions.jsonl \
+    evals/runs/baseline_*.jsonl evals/runs/tools_*.jsonl
+```
+
+The scorer normalises case, punctuation, and apostrophes before comparing, takes the
+first integer for `count` questions, and prints a per-question table of the
+questions the arms disagree on — which is the interesting part, since the exit
+criterion is about questions single-pass fails and tools get right.
+
+Anything it cannot decide mechanically is marked `review` rather than guessed: an
+answer that contains the ground truth inside a longer sentence, or a count answer
+with several numbers in it. Settle those by adding `"correct": true` or `false` to
+the line in the run file and scoring again. A human verdict always wins over the
+grader.
+
+Run output and `questions.jsonl` are both gitignored. Promote a question set worth
+sharing by copying it back into `questions.example.jsonl`.
+
 **Public benchmarks.** V* Bench and HR-Bench (4K/8K) for small details in large images, MME-RealWorld for high-resolution real-world scenes, and Video-MME and LongVideoBench for long video.
 
 **Custom suites.** Inject known label errors into a dataset and measure recall. Add document inspection tasks and multi-view metric questions with ground truth.

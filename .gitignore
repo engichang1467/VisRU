@@ -223,3 +223,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# eval run outputs (regenerate with python -m evals.baseline)
+evals/runs/
+# working question set (cp evals/questions.example.jsonl evals/questions.jsonl)
+evals/questions.jsonl

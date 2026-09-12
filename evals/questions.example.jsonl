@@ -1,6 +1,3 @@
-# labelled entries below were confirmed by eye against the source pixels.
-# Never copy an answer out of an agent's own report: grading a run against answers
-# that run produced measures nothing.
 {"id": "q01", "asset": "scene_b_1546479680612194.jpg", "kind": "text", "question": "What store name is on the tall vertical neon sign on the right-hand side of the street?", "answer": "TRADER JOE'S", "accept": ["trader joes", "traders joes"], "note": "fully legible at 2.0x; unreadable in a downsized full frame"}
 {"id": "q02", "asset": "trial_01.mp4", "kind": "text", "question": "What street name is on the blade sign at the intersection the vehicle approaches?", "answer": "Manchester", "note": "legible from roughly frame 100; confirmed at #108"}
 {"id": "q03", "asset": "scene_b_1546479680612194.jpg", "kind": "text", "question": "What store name is on the red-outlined vertical neon sign to the left of the Trader Joe's sign?", "answer": "BED BATH & BEYOND", "note": "first still shows BED BATH & clearly; confirm the final word before labelling"}

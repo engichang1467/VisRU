@@ -464,7 +464,8 @@ A question set is JSONL, one object per line:
 from a person looking at the pixels — seeding it from an agent's own report grades a
 run against itself and measures nothing.
 
-Copy the starter set and edit it:
+`questions.example.jsonl` is the tracked starter set. Copy it to
+`questions.jsonl`, which is gitignored, and do your labelling there:
 
 ```bash
 cp evals/questions.example.jsonl evals/questions.jsonl
@@ -521,8 +522,8 @@ with several numbers in it. Settle those by adding `"correct": true` or `false` 
 the line in the run file and scoring again. A human verdict always wins over the
 grader.
 
-Run output is gitignored. Question sets are not — the set is the artifact worth
-keeping.
+Run output and `questions.jsonl` are both gitignored. Promote a question set worth
+sharing by copying it back into `questions.example.jsonl`.
 
 **Public benchmarks.** V* Bench and HR-Bench (4K/8K) for small details in large images, MME-RealWorld for high-resolution real-world scenes, and Video-MME and LongVideoBench for long video.
 

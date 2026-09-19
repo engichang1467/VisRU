@@ -1,6 +1,10 @@
-# VisRU
+<p align="center">
+  <img src="img/visru-logo-acronym.png" alt="VisRU" width="360">
+</p>
 
-VisRU (Visual Reasoning and Understanding) is an agentic harness that gives a vision-language model a workspace of images, video, and multi-view captures, plus tools to search, zoom, measure, annotate, and check its own conclusions. Every claim in its final answer links to the crop, mask, frame, or overlay that supports it.
+# Visual Reasoning and Understanding
+
+**VisRU** (Visual Reasoning and Understanding) is an agentic harness that gives a vision-language model a workspace of images, video, and multi-view captures, plus tools to search, zoom, measure, annotate, and check its own conclusions. Every claim in its final answer links to the crop, mask, frame, or overlay that supports it.
 
 The design borrows from coding agents. A codebase is too large to read in one pass, so a coding agent searches, opens the files it needs, edits, and runs tests. visru runs the same loop over pixels.
 

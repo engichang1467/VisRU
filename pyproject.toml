@@ -40,7 +40,7 @@ kernel = ["jupyter-client>=8.6", "ipykernel>=6.29"]
 dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.scripts]
-visru = "visru.cli:app"
+visru = "visru.cli:main"
 
 [build-system]
 requires = ["hatchling"]

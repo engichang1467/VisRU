@@ -1,10 +1,25 @@
 from pathlib import Path
 
 import typer
+from rich.console import Console
+from rich.markup import escape
 
 from visru.workspace.registry import Registry
 
 app = typer.Typer(help="visru: visual reasoning and understanding harness")
+
+# Colors match img/visru-logo-acronym.png.
+_LETTERS = [
+    ("#45DDD0", ["__     __", "\\ \\   / /", " \\ \\ / / ", "  \\ V /  ", "   \\_/   "]),
+    ("#808080", [" _ ", "(_)", "| |", "| |", "|_|"]),
+    ("#808080", ["     ", " ___ ", "/ __|", "\\__ \\", "|___/"]),
+    ("#F9A94A", [" ____  ", "|  _ \\ ", "| |_) |", "|  _ < ", "|_| \\_\\"]),
+    ("#D9A6F5", [" _   _ ", "| | | |", "| | | |", "| |_| |", " \\___/ "]),
+]
+BANNER = "\n".join(
+    "".join(f"[{color}]{escape(rows[i])}[/]" for color, rows in _LETTERS)
+    for i in range(5)
+)
 
 
 @app.command()
@@ -38,5 +53,13 @@ def report(session: str) -> None:
     raise NotImplementedError
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Entry point: banner on a terminal, nothing extra when piped."""
+    err = Console(stderr=True)
+    if err.is_terminal:
+        err.print(BANNER, highlight=False)
     app()
+
+
+if __name__ == "__main__":
+    main()

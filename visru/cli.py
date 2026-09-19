@@ -1,10 +1,22 @@
 from pathlib import Path
 
 import typer
+from rich.console import Console
 
 from visru.workspace.registry import Registry
 
 app = typer.Typer(help="visru: visual reasoning and understanding harness")
+
+# Generated from img/visru-logo-acronym.png
+BANNER = "\n".join([
+    '[#45DDD0]▀████▀▀[/]  [#45DDD0]▀▀██▀▀[/]         [#F9A94A]▀████▀▀███▄▄[/] [#D9A6F5]▀▀████▀[/]   [#D9A6F5]▀███▀[/]',
+    '  [#45DDD0]███▄[/]    [#45DDD0]▄█[/]              [#F9A94A]███[/]    [#F9A94A]███[/]   [#D9A6F5]███[/]       [#D9A6F5]█[/]  ',
+    '   [#45DDD0]███[/]    [#45DDD0]█▀[/]    [#808080]██[/]        [#F9A94A]███[/]   [#F9A94A]▄██▀[/]   [#D9A6F5]███[/]       [#D9A6F5]█[/]  ',
+    '   [#45DDD0]▀███[/]  [#45DDD0]██[/]    [#808080]▄▄[/]   [#808080]▄▄▄[/]   [#F9A94A]████████[/]     [#D9A6F5]███[/]       [#D9A6F5]█[/]  ',
+    '    [#45DDD0]███[/] [#45DDD0]▄█[/]     [#808080]██[/]  [#808080]██[/] [#808080]▀[/]   [#F9A94A]███[/]   [#F9A94A]███▄[/]   [#D9A6F5]███[/]       [#D9A6F5]█[/]  ',
+    '     [#45DDD0]████▀[/]     [#808080]█▀[/]   [#808080]▀█▄[/]   [#F9A94A]███[/]    [#F9A94A]███[/]   [#D9A6F5]▀███[/]     [#D9A6F5]██[/]  ',
+    '      [#45DDD0]███[/]      [#808080]██▀▀█▄█▀[/] [#F9A94A]███████[/]  [#F9A94A]▀████[/]  [#D9A6F5]▀▀██████▀[/]   ',
+])
 
 
 @app.command()
@@ -38,5 +50,13 @@ def report(session: str) -> None:
     raise NotImplementedError
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Entry point: banner on a terminal, nothing extra when piped."""
+    err = Console(stderr=True)
+    if err.is_terminal:
+        err.print(BANNER, highlight=False)
     app()
+
+
+if __name__ == "__main__":
+    main()

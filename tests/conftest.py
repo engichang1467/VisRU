@@ -68,6 +68,40 @@ def marker_workspace(tmp_path):
     return root
 
 
+CORPUS_SIZE = 1000
+CORPUS_SIZES = [(1024, 768), (800, 600), (1280, 720), (960, 960)]
+
+
+@pytest.fixture(scope="session")
+def corpus(tmp_path_factory):
+    """A thousand-image folder, indexed. The scale the Phase 1 exit asks for.
+
+    Deliberately synthetic: the exit criterion is about the harness holding, not
+    about what is in the pictures, and a fixture that needs a real dataset on
+    disk cannot run anywhere but one laptop. Sizes vary so `fit_render_size`
+    takes more than one path through its loop.
+
+    Session-scoped because generating and hashing a thousand files is a few
+    seconds, and no test mutates the source images.
+    """
+    root = tmp_path_factory.mktemp("corpus")
+    for i in range(CORPUS_SIZE):
+        w, h = CORPUS_SIZES[i % len(CORPUS_SIZES)]
+        img = Image.new("RGB", (w, h), ((i * 7) % 256, (i * 13) % 256, (i * 29) % 256))
+        draw = ImageDraw.Draw(img)
+        # Something small and off-centre, so a zoomed view differs from a wide one.
+        draw.rectangle([w // 4, h // 4, w * 3 // 4, h * 3 // 4], fill=(255, 40, 40))
+        draw.text((8, 8), f"plate {i:04d}", fill=(255, 255, 255))
+        img.save(root / f"plate_{i:04d}.png")
+
+    from visru.workspace.registry import Registry
+
+    reg = Registry(root)
+    reg.scan()
+    reg.save()
+    return root
+
+
 def pytest_addoption(parser):
     parser.addoption("--run-models", action="store_true",
                      help="run tests that download and execute real model weights")

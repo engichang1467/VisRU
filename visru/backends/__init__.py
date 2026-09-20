@@ -25,6 +25,10 @@ class Response:
     calls: list[ToolCall] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
     stop_reason: str = ""
+    # The provider's own content blocks, to be handed back verbatim next turn.
+    # Thinking blocks must be replayed unchanged on the same model, and they
+    # cannot be rebuilt from `text` — the raw reasoning is never returned.
+    raw: Any = None
 
 
 class Backend(Protocol):

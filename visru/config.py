@@ -16,6 +16,9 @@ class ModelConfig:
     max_visual_tokens: int = 4784
     patch: int = 28
     max_upscale: float = 2.0
+    # Room to think and still emit a few tool calls. Lowballing this truncates a
+    # turn mid-thought and costs a whole retry.
+    max_tokens: int = 16_000
 
     @property
     def limits(self) -> dict[str, Any]:

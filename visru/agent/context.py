@@ -51,6 +51,7 @@ class ToolOutput:
     images: list[Image.Image] = field(default_factory=list)
     artifacts: list[str] = field(default_factory=list)
     elided: bool = False
+    is_error: bool = False
     reaction: str = ""  # what the model said after seeing this, set by add_turn
 
     @property
@@ -95,6 +96,10 @@ class Step:
     calls: list[ToolCall] = field(default_factory=list)
     outputs: list[ToolOutput] = field(default_factory=list)
     followup: str = ""  # a word from the harness when the step called no tools
+    # Whatever the backend needs handed back verbatim next turn — on Anthropic,
+    # the assistant content blocks, because thinking blocks must be replayed
+    # unchanged on the same model and cannot be rebuilt from text.
+    raw: Any = None
 
 
 class Context:
@@ -108,7 +113,8 @@ class Context:
         self.compactions = 0
 
     # --- building ---------------------------------------------------------
-    def add_turn(self, text: str, calls: list[ToolCall] | None = None) -> Step:
+    def add_turn(self, text: str, calls: list[ToolCall] | None = None,
+                 raw: Any = None) -> Step:
         # What the model says now is its reading of whatever it was just shown, so
         # it belongs to those results: it is the half of an elision note that
         # carries meaning rather than coordinates.
@@ -116,15 +122,17 @@ class Context:
             for out in self.steps[-1].outputs:
                 if not out.reaction:
                     out.reaction = text
-        step = Step(text=text, calls=list(calls or []))
+        step = Step(text=text, calls=list(calls or []), raw=raw)
         self.steps.append(step)
         return step
 
-    def add_output(self, call: ToolCall, result: ToolResult) -> ToolOutput:
+    def add_output(self, call: ToolCall, result: ToolResult,
+                   is_error: bool = False) -> ToolOutput:
         if not self.steps:
             raise ValueError("a tool result needs a model turn to answer")
         out = ToolOutput(call_id=call.id, name=call.name, text=result.text,
-                         images=list(result.images), artifacts=list(result.artifacts))
+                         images=list(result.images), artifacts=list(result.artifacts),
+                         is_error=is_error)
         self.steps[-1].outputs.append(out)
         self.enforce()
         return out
@@ -143,7 +151,7 @@ class Context:
 
     def add_error(self, call: ToolCall, message: str) -> ToolOutput:
         """A failed call still has to answer its tool_use, or the next request 400s."""
-        return self.add_output(call, ToolResult(text=f"error: {message}"))
+        return self.add_output(call, ToolResult(text=f"error: {message}"), is_error=True)
 
     # --- budget -----------------------------------------------------------
     @property
@@ -240,11 +248,16 @@ class Context:
                 assistant.append({"type": "tool_use", "id": call.id,
                                   "name": call.name, "input": call.arguments})
             if assistant:
-                messages.append({"role": "assistant", "content": assistant})
+                # `raw`, when a backend stored one, is that backend's own version of
+                # this turn. It may replay it instead of the neutral blocks; every
+                # other backend ignores the key.
+                messages.append({"role": "assistant", "content": assistant,
+                                 "raw": step.raw})
 
             if step.outputs:
                 results = [{"type": "tool_result", "tool_use_id": out.call_id,
-                            "content": self._result_blocks(out)}
+                            "content": self._result_blocks(out),
+                            "is_error": out.is_error}
                            for out in step.outputs]
                 messages.append({"role": "user", "content": results})
             elif step.followup:

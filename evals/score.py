@@ -83,9 +83,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{q.id:10}  " + "  ".join(f"{v:18}" for v in row))
 
     for name, res in results.items():
-        if res["tally"]["review"]:
-            print(f"\n{name}: {res['tally']['review']} answers need a human verdict — "
+        needs = [qid for qid, v in res["per_question"].items() if v == "review"]
+        if needs:
+            print(f"\n{name}: {len(needs)} answers need a human verdict — "
                   "add \"correct\": true/false to those lines and re-run")
+            print("  " + ", ".join(needs))
     return 0
 
 

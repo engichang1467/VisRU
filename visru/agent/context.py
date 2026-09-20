@@ -27,6 +27,11 @@ from visru.tools import ToolResult
 # round trip to learn something the budget only needs to the nearest few percent.
 CHARS_PER_TOKEN = 4
 STUB_CHARS = 140
+REACTION_CHARS = 300  # README.md:415 — what the model said after seeing the image
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 
 @dataclass
@@ -46,6 +51,7 @@ class ToolOutput:
     images: list[Image.Image] = field(default_factory=list)
     artifacts: list[str] = field(default_factory=list)
     elided: bool = False
+    reaction: str = ""  # what the model said after seeing this, set by add_turn
 
     @property
     def live_images(self) -> int:
@@ -54,17 +60,20 @@ class ToolOutput:
     def stub(self) -> str:
         """The note that replaces the pixels.
 
-        Keeps the first line of the tool's own text, which already names the asset,
-        the box and the scale — the three things the model needs to decide whether
-        this image is worth asking back.
+        Two halves, per README.md:415. The tool's own first line names the asset,
+        the box and the scale — enough to decide whether the image is worth asking
+        back. What the model said next is usually its reading of that image, and
+        losing that is how a session forgets a fact it already established and
+        pays to look a second time.
         """
         head = self.text.splitlines()[0] if self.text else ""
-        for artifact_id in self.artifacts:  # the ID is repeated by the wrapper
+        for artifact_id in self.artifacts:  # not repeated inside its own stub
             head = head.replace(f"artifact={artifact_id}", "").strip()
-        if len(head) > STUB_CHARS:
-            head = head[:STUB_CHARS].rstrip() + "…"
+        head = _clip(head, STUB_CHARS)
+
         named = ", ".join(self.artifacts) or self.name
-        return f"[{named} elided: {head}]"
+        said = _clip(" ".join(self.reaction.split()), REACTION_CHARS)
+        return f"[{named} elided: {head}" + (f"; model noted: {said}" if said else "") + "]"
 
     def elide(self) -> int:
         """Drop the pixels, keep the record. Returns how many images went."""
@@ -85,6 +94,7 @@ class Step:
     text: str
     calls: list[ToolCall] = field(default_factory=list)
     outputs: list[ToolOutput] = field(default_factory=list)
+    followup: str = ""  # a word from the harness when the step called no tools
 
 
 class Context:
@@ -99,6 +109,13 @@ class Context:
 
     # --- building ---------------------------------------------------------
     def add_turn(self, text: str, calls: list[ToolCall] | None = None) -> Step:
+        # What the model says now is its reading of whatever it was just shown, so
+        # it belongs to those results: it is the half of an elision note that
+        # carries meaning rather than coordinates.
+        if text and self.steps:
+            for out in self.steps[-1].outputs:
+                if not out.reaction:
+                    out.reaction = text
         step = Step(text=text, calls=list(calls or []))
         self.steps.append(step)
         return step
@@ -111,6 +128,18 @@ class Context:
         self.steps[-1].outputs.append(out)
         self.enforce()
         return out
+
+    def add_user(self, text: str) -> None:
+        """A word from the harness rather than from a tool.
+
+        Only legal after a turn that called nothing: a step with tool results
+        already owes the model a user message, and two in a row is a bad request.
+        """
+        if not self.steps:
+            raise ValueError("nothing to reply to yet")
+        if self.steps[-1].outputs:
+            raise ValueError("that step already answers with tool results")
+        self.steps[-1].followup = text
 
     def add_error(self, call: ToolCall, message: str) -> ToolOutput:
         """A failed call still has to answer its tool_use, or the next request 400s."""
@@ -218,6 +247,9 @@ class Context:
                             "content": self._result_blocks(out)}
                            for out in step.outputs]
                 messages.append({"role": "user", "content": results})
+            elif step.followup:
+                messages.append({"role": "user",
+                                 "content": [{"type": "text", "text": step.followup}]})
         return messages
 
     @staticmethod

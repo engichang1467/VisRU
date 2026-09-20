@@ -1,6 +1,7 @@
 """Navigation tools: what is here, show me this region, show me these frames."""
 
 import math
+from dataclasses import dataclass
 
 from PIL import Image
 
@@ -78,9 +79,26 @@ def view(ctx: ToolContext, ref: str, box: list[int] | None = None,
     return ToolResult(text=text, images=[out], artifacts=[art.id])
 
 
-def sample_frames(ctx: ToolContext, ref: str, n: int = 12, t0: float | None = None,
-                  t1: float | None = None) -> ToolResult:
-    """Contact sheet of n frames over a time range, each cell labelled with its ref."""
+@dataclass(frozen=True)
+class Sheet:
+    """A contact sheet and everything the caller needs to describe or store it."""
+
+    image: Image.Image
+    cells: list[dict]
+    times: list[float]
+    cell_w: int
+    source_w: int
+    scale: float
+
+
+def build_sheet(ctx: ToolContext, ref: str, n: int = 12, t0: float | None = None,
+                t1: float | None = None) -> Sheet:
+    """Build a contact sheet without saving it.
+
+    Split out from the tool so a trajectory replay can remake the exact image the
+    model was shown without creating a second artifact as a side effect. Frame
+    decoding is deterministic, so the same arguments give the same pixels.
+    """
     meta = ctx.registry.video_meta(ref)
     path = ctx.registry.abspath(ref)
     times = video.frame_times(meta, n, t0, t1)
@@ -106,16 +124,23 @@ def sample_frames(ctx: ToolContext, ref: str, n: int = 12, t0: float | None = No
     rw, rh, scale = fit_render_size(sheet.width, sheet.height, **ctx.cfg.model.limits)
     if (rw, rh) != sheet.size:
         sheet = sheet.resize((rw, rh), Image.Resampling.LANCZOS)
+    return Sheet(sheet, cells, times, cell_w, meta.width, scale)
+
+
+def sample_frames(ctx: ToolContext, ref: str, n: int = 12, t0: float | None = None,
+                  t1: float | None = None) -> ToolResult:
+    """Contact sheet of n frames over a time range, each cell labelled with its ref."""
+    s = build_sheet(ctx, ref, n, t0, t1)
 
     art = ctx.artifacts.save(
-        sheet, kind="contact_sheet", parent=ref,
+        s.image, kind="contact_sheet", parent=ref,
         # No transform: a sheet has no single mapping back to the source. The cell
         # refs are the way back, and `view` on one of them is exact.
-        params={"n": n, "t0": t0, "t1": t1, "cells": cells, "sheet_scale": scale})
-    listing = "\n".join(f"  {c['ref']} t={c['time']}s" for c in cells)
-    text = (f"artifact={art.id} source={ref} {len(cells)} frames "
-            f"over {times[0]:.2f}..{times[-1]:.2f}s, thumbnails at "
-            f"{cell_w / meta.width:.2f}x source scale.\n"
+        params={"n": n, "t0": t0, "t1": t1, "cells": s.cells, "sheet_scale": s.scale})
+    listing = "\n".join(f"  {c['ref']} t={c['time']}s" for c in s.cells)
+    text = (f"artifact={art.id} source={ref} {len(s.cells)} frames "
+            f"over {s.times[0]:.2f}..{s.times[-1]:.2f}s, thumbnails at "
+            f"{s.cell_w / s.source_w:.2f}x source scale.\n"
             f"Frames (call view on one of these refs to inspect at native scale):\n"
             f"{listing}")
-    return ToolResult(text=text, images=[sheet], artifacts=[art.id])
+    return ToolResult(text=text, images=[s.image], artifacts=[art.id])

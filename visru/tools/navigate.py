@@ -5,7 +5,7 @@ import math
 from PIL import Image
 
 from visru.geometry import ViewTransform, fit_render_size
-from visru.tools import ToolContext, ToolResult, scale_note
+from visru.tools import ToolContext, ToolResult, resolve_ref, scale_note
 from visru.tools.annotate import caption, draw_grid
 from visru.workspace import video
 
@@ -41,9 +41,16 @@ def _clamp_box(box: list[int] | None, w: int, h: int) -> tuple[int, int, int, in
 def render_region(ctx: ToolContext, ref: str, box: list[int] | None = None,
                   ) -> tuple[Image.Image, ViewTransform, tuple[int, int, int, int]]:
     """Crop and render one region at model resolution. Every tool that shows or
-    analyses pixels goes through here, so they all share one coordinate story."""
+    analyses pixels goes through here, so they all share one coordinate story.
+
+    `ref` may be an artifact ID, which resolves to the asset and box that made it;
+    an explicit `box` still wins, since every box the model sends is in
+    source-asset pixels whatever it asked to look at.
+    """
+    ref, rendered_from = resolve_ref(ctx, ref)
     src = ctx.registry.load_image(ref)
-    x0, y0, x1, y1 = _clamp_box(box, src.width, src.height)
+    x0, y0, x1, y1 = _clamp_box(box if box is not None else rendered_from,
+                                src.width, src.height)
     crop = src.crop((x0, y0, x1, y1))
     rw, rh, scale = fit_render_size(crop.width, crop.height, **ctx.cfg.model.limits)
     out = crop.resize((rw, rh), Image.Resampling.LANCZOS)

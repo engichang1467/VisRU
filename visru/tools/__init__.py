@@ -71,6 +71,38 @@ class ToolContext:
         return self._registry
 
 
+def resolve_ref(ctx: ToolContext, ref: str) -> tuple[str, list[int] | None]:
+    """Resolve an artifact ID to the asset region it was rendered from.
+
+    `view("a_0042")` has to work. The context manager elides an ageing image down
+    to a stub naming its artifact ID, and that stub is only honest if the model
+    can ask the image back; artifact IDs are not assets, so the registry alone
+    cannot resolve them.
+
+    Re-deriving from the parent rather than re-opening the stored PNG keeps one
+    coordinate story — what comes back carries a transform into source pixels,
+    as the original did — and makes "any view can be remade" true by
+    construction rather than by assertion.
+
+    Returns (asset ref, the box it was cropped from). Asset refs pass straight
+    through, so every caller can hand us whatever the model said.
+    """
+    seen: set[str] = set()
+    box: list[int] | None = None
+    while ref.startswith("a_"):
+        if ref in seen:  # a hand-edited sidecar; better than spinning forever
+            raise ValueError(f"artifact {ref} is its own ancestor")
+        seen.add(ref)
+        art = ctx.artifacts.load(ref)
+        if art.parent is None:
+            raise ValueError(f"{ref} was not rendered from an asset, so there is "
+                             "nothing to show; pass an asset ID instead")
+        if box is None:  # the outermost artifact is the most specific crop
+            box = art.params.get("box")
+        ref = art.parent
+    return ref, box
+
+
 def open_workspace(root: str | Path, cfg: Config | None = None,
                    session: str | None = None) -> ToolContext:
     """Open a workspace that `visru index` has already scanned."""

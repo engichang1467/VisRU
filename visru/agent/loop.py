@@ -69,6 +69,7 @@ def run(task: str, ctx: ToolContext, backend: Backend, max_steps: int = 200,
     """
     system = system_prompt() if system is None else system
     context = Context(task=task, cfg=ctx.cfg, system=system)
+    ctx.backend, ctx.child_usage = backend, {}  # for `delegate`
     log = Trajectory(ctx.root, ctx.session)
     schemas = registry.schemas(tools)
 
@@ -106,6 +107,7 @@ def run(task: str, ctx: ToolContext, backend: Backend, max_steps: int = 200,
         if reason == "reported":
             break
 
+    _accrue(usage, ctx.child_usage)  # subagents ran on this session's behalf
     return Session(session=ctx.session, steps=step + 1, reason=reason, report=report,
                    trajectory=log.path, elisions=context.elisions,
                    compactions=context.compactions,

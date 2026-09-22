@@ -35,9 +35,12 @@ def _png_b64(image) -> tuple[str, int]:
 
 
 def run(workspace: str, questions_path: str, out_dir: str = "evals/runs",
-        model: str | None = None, dry_run: bool = False, frames: int = 12) -> Path:
+        model: str | None = None, dry_run: bool = False, frames: int = 12,
+        sample: int | None = None, seed: int = 0) -> Path:
     ctx = open_workspace(workspace)
     questions = suite.load(questions_path)
+    if sample is not None:  # the same fixed-seed subset evals.agent draws
+        questions = suite.select(questions, sample, seed)
     model = model or ctx.cfg.model.name
 
     client = None
@@ -71,7 +74,8 @@ def run(workspace: str, questions_path: str, out_dir: str = "evals/runs",
             data, nbytes = _png_b64(image)
             record = {"id": q.id, "asset": ref, "arm": "single_pass", "model": model,
                       "input": kind, "render_px": list(image.size), "scale": scale,
-                      "png_kb": round(nbytes / 1024), **record_extra}
+                      "png_kb": round(nbytes / 1024), "category": q.category,
+                      **record_extra}
 
             if dry_run:
                 record["answer"] = None
@@ -82,7 +86,7 @@ def run(workspace: str, questions_path: str, out_dir: str = "evals/runs",
                         {"type": "image", "source": {"type": "base64",
                                                      "media_type": "image/png",
                                                      "data": data}},
-                        {"type": "text", "text": f"{PROMPT}\n\n{q.question}"}]}])
+                        {"type": "text", "text": f"{PROMPT}\n\n{suite.prompt(q)}"}]}])
                 record["answer"] = "".join(b.text for b in message.content
                                            if b.type == "text").strip()
                 record["usage"] = {"input": message.usage.input_tokens,
@@ -105,12 +109,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default=None, help="defaults to visru.toml")
     parser.add_argument("--frames", type=int, default=12,
                         help="contact-sheet frames for video questions")
+    parser.add_argument("--sample", type=int, default=None,
+                        help="fixed-seed subset of labelled questions, as evals.agent")
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true",
                         help="render every question's image but call no API")
     args = parser.parse_args(argv)
 
     out = run(args.workspace, args.questions, args.out_dir, args.model,
-              args.dry_run, args.frames)
+              args.dry_run, args.frames, args.sample, args.seed)
     print(f"\nwrote {out}")
     return 0
 

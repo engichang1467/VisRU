@@ -62,12 +62,15 @@ def _accrue(total: dict[str, int], usage: dict[str, int]) -> None:
 
 
 def run(task: str, ctx: ToolContext, backend: Backend, max_steps: int = 200,
-        system: str | None = None) -> Session:
-    """Drive one session to an answer, a stop, or the step limit."""
+        system: str | None = None, tools: list[str] | None = None) -> Session:
+    """Drive one session to an answer, a stop, or the step limit.
+
+    `tools` limits which tools the model is offered and may call; None means all.
+    """
     system = system_prompt() if system is None else system
     context = Context(task=task, cfg=ctx.cfg, system=system)
     log = Trajectory(ctx.root, ctx.session)
-    schemas = registry.schemas()
+    schemas = registry.schemas(tools)
 
     usage: dict[str, int] = {}
     peak, step, nudged = 0, -1, False
@@ -91,7 +94,7 @@ def run(task: str, ctx: ToolContext, backend: Backend, max_steps: int = 200,
         nudged = False
 
         for call in response.calls:
-            result, error = _execute(ctx, call)
+            result, error = _execute(ctx, call, tools)
             context.add_output(call, result)
             log.tool_call(step, call.name, call.arguments, result.text,
                           result.artifacts, shown=bool(result.images), error=error)
@@ -109,7 +112,8 @@ def run(task: str, ctx: ToolContext, backend: Backend, max_steps: int = 200,
                    peak_live_images=max(peak, context.live_images), usage=usage)
 
 
-def _execute(ctx: ToolContext, call: ToolCall) -> tuple[ToolResult, str | None]:
+def _execute(ctx: ToolContext, call: ToolCall,
+             allowed: list[str] | None = None) -> tuple[ToolResult, str | None]:
     """Run one call. Bad input comes back as a message, not an exception.
 
     A raised error would end the session; the model can usually fix a bad box or a
@@ -117,7 +121,7 @@ def _execute(ctx: ToolContext, call: ToolCall) -> tuple[ToolResult, str | None]:
     wrong. This mirrors what the MCP server does with ToolError.
     """
     try:
-        return registry.execute(ctx, call.name, call.arguments), None
+        return registry.execute(ctx, call.name, call.arguments, allowed), None
     except USER_ERRORS as exc:
         message = exc.args[0] if exc.args else str(exc)
         return ToolResult(text=f"error: {message}"), str(message)

@@ -9,7 +9,7 @@ from typing import Any
 @dataclass(frozen=True)
 class ModelConfig:
     backend: str = "anthropic"  # or "openai_compatible"
-    name: str = "claude-opus-5"
+    name: str = "claude-sonnet-5"
     # 2000 not 2576: once a request holds more than 20 images every image must be
     # <=2000 px per side, and any real session crosses that.
     max_edge: int = 2000

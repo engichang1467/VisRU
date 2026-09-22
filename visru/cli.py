@@ -64,7 +64,7 @@ def index(
 def run(
     workspace: str,
     task: str = typer.Option(..., "--task", help="what to find out"),
-    max_steps: int = typer.Option(200, "--max-steps", help="hard ceiling on turns"),
+    max_steps: int = typer.Option(30, "--max-steps", help="hard ceiling on turns"),
     backend: str | None = typer.Option(None, "--backend",
                                        help="override visru.toml: anthropic | replay"),
     script: str | None = typer.Option(None, "--script",

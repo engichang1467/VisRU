@@ -81,7 +81,7 @@ def run(task: str, ctx: ToolContext, backend: Backend, max_steps: int = 200,
         response: Response = backend.complete(system, context.render(), schemas)
         _accrue(usage, response.usage)
         log.model_turn(step, response.text, response.usage)
-        context.add_turn(response.text, response.calls)
+        context.add_turn(response.text, response.calls, raw=response.raw)
 
         if not response.calls:
             # Ask once for a report. If it still calls nothing, it has finished

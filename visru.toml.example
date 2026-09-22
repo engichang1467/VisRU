@@ -2,7 +2,7 @@
 
 [model]
 backend = "anthropic"        # or "openai_compatible"
-name = "claude-opus-5"
+name = "claude-sonnet-5"
 max_edge = 2000              # 2576 is the model limit, but >20 images forces 2000
 max_visual_tokens = 4784
 patch = 28

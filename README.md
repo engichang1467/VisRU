@@ -319,7 +319,7 @@ the index once per workspace (needs the `[tools]` extra; SigLIP runs on CPU too)
 
 ```bash
 visru index sample_data --embed              # one vector per image, 1 per second of video
-visru run sample_data --task "In trial_01.mp4, when is the street-name sign legible?"
+visru run sample_data --task "In trial_01.mp4, when is the street-name sign legible?" --max-steps 30
 ```
 
 The model can now call `search` ("a street-name sign") to get candidate time
@@ -379,7 +379,7 @@ See the [vision docs](https://platform.claude.com/docs/en/build-with-claude/visi
 # visru.toml
 [model]
 backend = "anthropic"        # or "openai_compatible"
-name = "claude-opus-5"
+name = "claude-sonnet-5"
 max_edge = 2576
 max_visual_tokens = 4784
 patch = 28

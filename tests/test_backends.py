@@ -153,6 +153,19 @@ def test_the_system_prompt_is_sent_cacheable():
     assert system[0]["cache_control"] == {"type": "ephemeral"}
 
 
+def test_the_history_is_sent_cacheable_at_its_tail():
+    """Without this every turn re-bills the whole history at full price."""
+    client = FakeClient(reply())
+    AnthropicBackend(Config(), client=client).complete(
+        "s", filled_context().render(), [])
+
+    messages = client.messages.seen["messages"]
+    assert messages[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    marked = [b for m in messages[:-1] for b in m["content"]
+              if isinstance(b, dict) and "cache_control" in b]
+    assert not marked, "only the tail carries the breakpoint"
+
+
 def test_max_tokens_comes_from_config():
     client = FakeClient(reply())
     cfg = Config(model=ModelConfig(max_tokens=1234))

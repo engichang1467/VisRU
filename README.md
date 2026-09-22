@@ -252,6 +252,23 @@ carries whatever the model cannot see in the pixels — here, a warehouse set:
 - Report findings per image ID. Measurements in pixels unless a ruler is visible.
 ```
 
+## Quick start (Phase 1)
+
+visru also runs its own agent loop, without Claude Code. After `visru index`:
+
+```bash
+visru run sample_data --task "What store name is on the tall vertical neon sign?" --max-steps 20
+```
+
+This calls the model in `visru.toml` (Anthropic by default, so set `ANTHROPIC_API_KEY`
+or run `ant auth login`). It prints the session summary and the submitted report,
+and writes the trajectory to `sample_data/.visru/trajectory/<session>.jsonl` and the
+ledger to `sample_data/.visru/ledger/<session>.json`. It exits 0 only when the model
+submits a report the ledger accepts.
+
+To exercise the loop without API spend, pass `--backend replay --script turns.json`,
+where the script is a JSON list of turns (`{"text", "calls": [{"name", "arguments"}]}`).
+
 ## Implementation notes
 
 ### Model image limits

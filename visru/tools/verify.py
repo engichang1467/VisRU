@@ -17,13 +17,17 @@ from visru.evidence.ledger import Check, Claim, Ledger, RejectedReport
 from visru.geometry import ViewTransform
 from visru.tools import ToolContext, ToolResult, resolve_ref, scale_note
 from visru.tools.annotate import draw_marks
-from visru.tools.navigate import render_region
+from visru.tools.navigate import build_sheet, render_region
 from visru.workspace.artifacts import Artifact, Mark
 from visru.workspace.registry import parse_ref
 
 CHECKABLE = ("view", "detect", "segment", "ocr")  # artifacts that carry a reading
-CHECK_KINDS = ("count", "text", "localize")
+# When something happened: the model's reading of frames, a search window, a track.
+TEMPORAL_CHECKABLE = ("view", "contact_sheet", "search", "track")
+READS_ITSELF = ("view", "contact_sheet")  # artifacts that stand for the model's reading
+CHECK_KINDS = ("count", "text", "localize", "temporal")
 IOU_AGREE = 0.5
+TEMPORAL_AGREE = 1.0  # seconds; both ends of two windows within this agree
 COVERAGE_CELL = 16  # source px per coverage-grid cell
 
 
@@ -126,8 +130,52 @@ def _selected(art: Artifact, pick) -> list[Mark]:
     return [art.mark(i) for i in wanted]
 
 
+def parse_window(value) -> tuple[float, float]:
+    """"12.4..15.0" or [12.4, 15.0] -> (12.4, 15.0), ends in order."""
+    if isinstance(value, (list, tuple)):
+        numbers = list(value)
+    else:
+        numbers = re.findall(r"\d+(?:\.\d+)?", str(value).replace("..", " "))
+    if len(numbers) != 2:
+        raise ValueError(f"a temporal reading is a window like '12.4..15.0' (seconds), "
+                         f"got {value!r}")
+    a, b = sorted(float(n) for n in numbers)
+    return a, b
+
+
+def _one(options: dict, pick, art: Artifact, what: str):
+    """The window `pick` names, or the only one there is."""
+    if pick is None and len(options) == 1:
+        return next(iter(options.values()))
+    if isinstance(pick, list) and len(pick) == 1:
+        pick = pick[0]
+    if pick is None or str(pick) not in options:
+        raise ValueError(f"{art.id} has {what} {sorted(options, key=int)}; pass marks "
+                         "with one of them for this artifact")
+    return options[str(pick)]
+
+
+def _temporal_reading(art: Artifact, pick, value) -> tuple[float, float]:
+    if art.kind in READS_ITSELF:
+        if value is None:
+            raise ValueError(f"{art.id} is a {art.kind}, so it stands for your own "
+                             "reading: pass value='t0..t1' in seconds")
+        return parse_window(value)
+    if art.kind == "search":
+        wins = {str(i): w for i, w in enumerate(art.params.get("windows", []), start=1)}
+        w = _one(wins, pick, art, "windows (marks)")
+        return w["t0"], w["t1"]
+    obj = _one(art.params.get("objects", {}), pick, art, "tracked objects (marks)")
+    if obj["present"] is None:
+        raise ValueError(f"{art.id} mark {pick}: the object was never tracked, so it "
+                         "gives no window")
+    return tuple(obj["present"])
+
+
 def _reading(art: Artifact, kind: str, pick, value, box):
     """What one method says: the model's own reading for a view, the marks otherwise."""
+    if kind == "temporal":
+        return _temporal_reading(art, pick, value), []
     if art.kind == "view":
         # A view has no output of its own; it stands for the model reading the pixels.
         given = box if kind == "localize" else value
@@ -157,6 +205,11 @@ def _agree(kind: str, readings: list) -> tuple[bool, dict]:
     if kind == "text":
         # Spaces dropped too: OCR splits a sign into lines a person reads as one.
         return len({normalise(r).replace(" ", "") for r in readings}) == 1, {}
+    if kind == "temporal":
+        windows = [parse_window(r) for r in readings]
+        gap = max(max(abs(a[0] - b[0]), abs(a[1] - b[1]))
+                  for a, b in itertools.combinations(windows, 2))
+        return gap <= TEMPORAL_AGREE, {"max_gap_s": round(gap, 2)}
     iou = min(_iou(a, b) for a, b in itertools.combinations(readings, 2))
     return iou >= IOU_AGREE, {"iou": round(iou, 3)}
 
@@ -183,11 +236,14 @@ def cross_check(ctx: ToolContext, kind: str, artifacts: list[str],
                          "give one per artifact (null for all of its marks)")
 
     arts = [ctx.artifacts.load(a) for a in artifacts]
+    allowed = TEMPORAL_CHECKABLE if kind == "temporal" else CHECKABLE
     for art in arts:
-        if art.kind not in CHECKABLE:
-            raise ValueError(f"{art.id} is a {art.kind}; cross_check reads "
-                             f"{', '.join(CHECKABLE)} artifacts")
+        if art.kind not in allowed:
+            raise ValueError(f"{art.id} is a {art.kind}; a {kind} cross_check reads "
+                             f"{', '.join(allowed)} artifacts")
     assets = {resolve_ref(ctx, a.id)[0] for a in arts}
+    if kind == "temporal":  # frames of one video are the same asset in time
+        assets = {parse_ref(a)[0] for a in assets}
     if len(assets) != 1:
         raise ValueError(f"the artifacts come from different assets {sorted(assets)}; "
                          "a check compares readings of the same pixels")
@@ -211,11 +267,35 @@ def cross_check(ctx: ToolContext, kind: str, artifacts: list[str],
         if art.kind == "view" and kind == "localize":
             drawn.append(Mark(id=len(drawn) + 1, label=f"{art.id}: claimed",
                               box=tuple(float(v) for v in reading)))
-    if value is not None and not any(a.kind == "view" for a in arts):
+    if value is not None and not any(a.kind in READS_ITSELF for a in arts):
         readings.append(value)  # the claimed answer must match the methods too
     agreed, detail = _agree(kind, readings)
     result = "agree" if agreed else "disagree"
+    if kind == "temporal":
+        readings = [list(parse_window(r)) for r in readings]
 
+    params = {"kind": kind, "methods": methods, "artifacts": artifacts, "value": value,
+              "readings": readings, "result": result, "detail": detail}
+    if kind == "temporal":
+        # The frames at each reading's ends, so a person can see what was compared.
+        times = sorted({t for r in readings for t in r})[:12]
+        sheet = build_sheet(ctx, asset, times=times)
+        art = ctx.artifacts.save(sheet.image, kind="check", parent=asset,
+                                 params={**params, "times": times, "cells": sheet.cells})
+    else:
+        art = _spatial_check(ctx, asset, drawn, params)
+    shown = "\n".join(f"  {m}: {r!r}" for m, r in zip(methods, readings))
+    extra = "".join(f" {k}={v}" for k, v in detail.items())
+    text = (f"artifact={art.id} cross_check {kind}: {result.upper()}{extra}\n{shown}\n"
+            + (f"Cite it in the claim's checks as {{\"check\": \"{art.id}\"}}; that "
+               "is what earns verified." if agreed else
+               f"The methods disagree. Look again, or report the claim as contested "
+               f"citing {{\"check\": \"{art.id}\"}}."))
+    return ToolResult(text=text, artifacts=[art.id])
+
+
+def _spatial_check(ctx: ToolContext, asset: str, drawn: list[Mark], params: dict):
+    """Save a check artifact rendered around what the readings point at."""
     region = None
     if drawn:  # frame the evidence, not the whole 8K image
         x0 = min(m.box[0] for m in drawn); y0 = min(m.box[1] for m in drawn)
@@ -225,19 +305,8 @@ def cross_check(ctx: ToolContext, kind: str, artifacts: list[str],
                   math.ceil(x1 + pad), math.ceil(y1 + pad)]
     img, tf, region = render_region(ctx, asset, region)
     out = draw_marks(img, drawn, tf) if drawn else img
-    art = ctx.artifacts.save(out, kind="check", parent=asset, transform=tf, marks=drawn,
-                             params={"box": list(region), "kind": kind, "methods": methods,
-                                     "artifacts": artifacts, "value": value,
-                                     "readings": readings, "result": result,
-                                     "detail": detail})
-    shown = "\n".join(f"  {m}: {r!r}" for m, r in zip(methods, readings))
-    extra = f" iou={detail['iou']}" if "iou" in detail else ""
-    text = (f"artifact={art.id} cross_check {kind}: {result.upper()}{extra}\n{shown}\n"
-            + (f"Cite it in the claim's checks as {{\"check\": \"{art.id}\"}}; that "
-               "is what earns verified." if agreed else
-               f"The methods disagree. Look again, or report the claim as contested "
-               f"citing {{\"check\": \"{art.id}\"}}."))
-    return ToolResult(text=text, artifacts=[art.id])
+    return ctx.artifacts.save(out, kind="check", parent=asset, transform=tf, marks=drawn,
+                              params={"box": list(region), **params})
 
 
 def coverage_summary(ctx: ToolContext) -> dict:
@@ -258,10 +327,12 @@ def coverage_summary(ctx: ToolContext) -> dict:
             grids[asset_id] = (np.zeros(shape, bool), np.zeros(shape, bool))
         return grids[asset_id]
 
+    # A subagent's session is `<parent>_w<i>`: what it looked at, this session did.
     for art in ctx.artifacts.all():
-        if art.session != ctx.session or art.kind == "check":
+        own = art.session == ctx.session or art.session.startswith(f"{ctx.session}_w")
+        if not own or art.kind == "check":
             continue  # a check is the harness's render, never shown to the model
-        if art.kind == "contact_sheet":
+        if "cells" in art.params:  # contact sheets, search hits, tracks
             asset_id, _ = parse_ref(art.parent)
             seen, _ = frames.setdefault(asset_id, (set(), set()))
             seen.update(c["index"] for c in art.params.get("cells", []))

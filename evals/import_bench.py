@@ -1,8 +1,9 @@
-"""Fetch V* Bench and HR-Bench into indexed workspaces with question files.
+"""Fetch V* Bench, HR-Bench and Charades-STA into indexed workspaces with question files.
 
     python -m evals.import_bench vstar        # -> bench/vstar/, 191 questions
     python -m evals.import_bench hrbench_4k   # -> bench/hrbench_4k/, 200 questions
     python -m evals.import_bench hrbench_8k   # -> bench/hrbench_8k/, 200 questions
+    python -m evals.import_bench charades_sta --sample 50   # -> bench/charades_sta/
 
 Each workspace gets its images, `questions.jsonl` in the evals.suite format
 (kind "choice", answer = option letter), and a registry, so it is ready for
@@ -15,6 +16,13 @@ single-instance (FSP) and 100 cross-instance (FCP). Not rotation 0: there the
 answer is always A, and a model that always says A would score 100%. The k-th
 question keeps rotation k % 4, so answer letters come out balanced. The TSV is
 streamed, never stored, and re-running skips images already on disk.
+
+Charades-STA (Phase 3) is 3,720 sentence-to-moment queries over Charades videos.
+The videos sit in four zips totalling ~16 GB; the zips are read over HTTP range
+requests and only the sampled videos are extracted. One query per video, drawn
+with a fixed seed, as kind "temporal" with answer "start..end" and a tolerance of
+TOLERANCE_S seconds per end, written into each question before any run.
+Charades is licensed for non-commercial research use only.
 """
 
 import argparse
@@ -23,16 +31,24 @@ import csv
 import hashlib
 import io
 import json
+import random
 import re
 import sys
+import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 
+from visru.workspace import video
 from visru.workspace.registry import Registry
 
 VSTAR = "craigwu/vstar_bench"
 HRBENCH = "DreamMr/HR-Bench"
-BENCHES = ("vstar", "hrbench_4k", "hrbench_8k")
+CHARADES = "lmms-eval/charades_sta"
+CHARADES_PARTS = 4
+ROWS_API = "https://datasets-server.huggingface.co/rows"
+TOLERANCE_S = 1.0
+BENCHES = ("vstar", "hrbench_4k", "hrbench_8k", "charades_sta")
 OPTION = re.compile(r"^\(([A-Z])\)\s*(.*)$")
 
 
@@ -105,15 +121,84 @@ def import_hrbench(root: Path, which: str) -> list[dict]:
     return out
 
 
+def _charades_rows() -> list[dict]:
+    """Every test row, via the datasets-server JSON API (no parquet reader needed)."""
+    rows, offset, total = [], 0, None
+    while total is None or offset < total:
+        query = urllib.parse.urlencode({"dataset": CHARADES, "config": "default",
+                                        "split": "test", "offset": offset, "length": 100})
+        with urllib.request.urlopen(f"{ROWS_API}?{query}") as resp:
+            page = json.load(resp)
+        total = page["num_rows_total"]
+        rows.extend(r["row"] for r in page["rows"])
+        offset += len(page["rows"])
+        if not page["rows"]:
+            break
+    return rows
+
+
+def pick_charades(rows: list[dict], sample: int, seed: int) -> list[dict]:
+    """One query per video for `sample` videos, the same ones for the same seed."""
+    by_video: dict[str, list[dict]] = {}
+    for row in rows:
+        by_video.setdefault(row["video"], []).append(row)
+    rng = random.Random(seed)
+    videos = sorted(by_video)
+    chosen = rng.sample(videos, min(sample, len(videos)))
+    return [rng.choice(by_video[v]) for v in sorted(chosen)]
+
+
+def parse_charades(row: dict, duration: float | None = None) -> dict:
+    t0, t1 = sorted(float(t) for t in row["timestamp"])
+    if duration:  # some annotated ends run past the file; nobody can answer those
+        t1 = min(t1, duration)
+    caption = row["caption"].strip().rstrip(".")
+    return {"id": f"charades_{Path(row['video']).stem}", "asset": row["video"],
+            "question": f'In this video, when does this happen: "{caption}"?',
+            "answer": f"{t0:.2f}..{t1:.2f}", "kind": "temporal",
+            "tolerance": TOLERANCE_S}
+
+
+def import_charades(root: Path, sample: int, seed: int) -> list[dict]:
+    from huggingface_hub import HfFileSystem
+
+    picked = pick_charades(_charades_rows(), sample, seed)
+    wanted = {r["video"] for r in picked if not (root / r["video"]).is_file()}
+    fs = HfFileSystem()
+    for part in range(1, CHARADES_PARTS + 1):
+        if not wanted:
+            break
+        name = f"datasets/{CHARADES}/Charades_v1_480_part_{part}.zip"
+        with fs.open(name, "rb", block_size=1 << 20) as remote, \
+                zipfile.ZipFile(remote) as z:
+            for member in z.namelist():
+                base = Path(member).name
+                if base in wanted:
+                    (root / base).write_bytes(z.read(member))
+                    wanted.discard(base)
+                    print(f"  {base} from part {part}", flush=True)
+    if wanted:
+        raise FileNotFoundError(f"not in any zip part: {sorted(wanted)}")
+    return [parse_charades(r, video.probe(root / r["video"]).duration) for r in picked]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("bench", choices=BENCHES)
     parser.add_argument("--root", default=None, help="defaults to bench/<bench>")
+    parser.add_argument("--sample", type=int, default=50,
+                        help="charades_sta: videos to fetch, one query each")
+    parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
 
     root = Path(args.root or f"bench/{args.bench}").resolve()
     root.mkdir(parents=True, exist_ok=True)
-    rows = import_vstar(root) if args.bench == "vstar" else import_hrbench(root, args.bench)
+    if args.bench == "vstar":
+        rows = import_vstar(root)
+    elif args.bench == "charades_sta":
+        rows = import_charades(root, args.sample, args.seed)
+    else:
+        rows = import_hrbench(root, args.bench)
     path = _write_questions(root, rows)
 
     reg = Registry.load(root)

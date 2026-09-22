@@ -5,7 +5,9 @@
     python -m evals.agent ... --arm zoom_only --out evals/runs/zoom_only_vstar.jsonl
 
 Arms (README "Baselines"): `single_pass` lives in evals/baseline.py; here are
-`zoom_only` (list_assets, view, submit_report) and `full` (every tool).
+`zoom_only` (list_assets, view, submit_report), `no_subagents` (every tool but
+delegate) and `full` (every tool). Subagent sessions count toward a question's
+tool calls and visual tokens.
 
 Each question is its own session, so its trajectory, ledger and coverage stand
 alone. The model is told to put its final answer in a claim with claim_id
@@ -30,9 +32,11 @@ from visru.agent.trajectory import read as read_log, shown_artifacts
 from visru.evidence.ledger import LEDGER_DIR
 from visru.geometry import visual_tokens
 from visru.tools import open_workspace
+from visru.tools.registry import TOOLS
 
 ARMS = {
     "zoom_only": ["list_assets", "view", "submit_report"],
+    "no_subagents": [name for name in TOOLS if name != "delegate"],
     "full": None,  # every tool in the registry
 }
 
@@ -43,6 +47,10 @@ TASK = """Question about asset {asset} ({name}):
 Investigate with the tools you have, then call submit_report. Include one claim
 with claim_id "answer" whose text is only your final answer{choice}. Give that
 claim the status your evidence warrants; add other claims if they help."""
+
+
+ANSWER_FORM = {"choice": " — the option letter",
+               "temporal": " — the time window as start..end in seconds"}
 
 
 def answer_claim(root: Path, session: str) -> dict | None:
@@ -63,7 +71,7 @@ def run_one(workspace: str, q: suite.Question, arm: str, run_id: str, model: str
     ctx.cfg = replace(ctx.cfg, model=replace(ctx.cfg.model, **overrides))
     ref = suite.resolve(ctx.registry, q.asset)
     task = TASK.format(asset=ref, name=ctx.registry.get(ref).name, prompt=suite.prompt(q),
-                       choice=" — the option letter" if q.kind == "choice" else "")
+                       choice=ANSWER_FORM.get(q.kind, ""))
 
     started = time.monotonic()
     driver = backends.load(ctx.cfg, **({"path": script} if script else {}))
@@ -72,6 +80,8 @@ def run_one(workspace: str, q: suite.Question, arm: str, run_id: str, model: str
     wall = time.monotonic() - started
 
     records = read_log(result.trajectory)
+    for child in sorted(result.trajectory.parent.glob(f"{session}_w*.jsonl")):
+        records += read_log(child)  # subagents looked on this question's behalf
     patch = ctx.cfg.model.patch
     shown = shown_artifacts(records)
     tokens = 0

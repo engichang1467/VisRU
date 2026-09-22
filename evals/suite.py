@@ -34,6 +34,8 @@ from visru.tools.verify import normalise
 
 KINDS = ("text", "count", "localize", "temporal", "choice")
 LETTERS = "ABCDEFGHIJ"
+TOLERANCE = 1.0  # temporal default, seconds per end, when a question names none
+NUMBER = re.compile(r"\d+(?:\.\d+)?")  # times are never negative; "12-15" is a range
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,7 @@ class Question:
     note: str = ""
     options: list[str] = field(default_factory=list)  # choice questions, in letter order
     category: str = ""  # benchmark subset, e.g. direct_attributes, single, cross
+    tolerance: float | None = None  # temporal: seconds each end may be off; fixed pre-run
 
     @property
     def labelled(self) -> bool:
@@ -103,6 +106,9 @@ def resolve(registry, asset: str) -> str:
 
 def prompt(q: Question) -> str:
     """The question as the model sees it, with lettered options for a choice."""
+    if q.kind == "temporal":
+        return (f"{q.question}\nAnswer with the time window in seconds as start..end, "
+                "e.g. 12.4..15.0.")
     if q.kind != "choice":
         return q.question
     lines = [q.question, *(f"({LETTERS[i]}) {o}" for i, o in enumerate(q.options)),
@@ -124,12 +130,37 @@ def _choice(question: Question, answer: str) -> bool | None:
     return None if mentioned else False
 
 
+def window(text: str) -> tuple[float, float] | None:
+    """(start, end) from "12.4..15.0" or "from 12.4 s to 15 s"; None unless exactly two
+    numbers. Dots are not a decimal point when doubled, so "12..15" is two numbers."""
+    numbers = NUMBER.findall(str(text).replace("..", " "))
+    if len(numbers) != 2:
+        return None
+    a, b = sorted(float(n) for n in numbers)
+    return a, b
+
+
+def _temporal(question: Question, answer: str) -> bool | None:
+    """Both ends within the question's tolerance. Anything but two numbers — "about
+    12 s", "12-15 s, or maybe 20" — goes to a person rather than being guessed."""
+    truth, given = window(question.answer), window(answer)
+    if truth is None:
+        raise ValueError(f"{question.id}: temporal answer {question.answer!r} is not "
+                         "start..end")
+    if given is None:
+        return None
+    tol = TOLERANCE if question.tolerance is None else question.tolerance
+    return abs(given[0] - truth[0]) <= tol and abs(given[1] - truth[1]) <= tol
+
+
 def grade(question: Question, answer: str) -> bool | None:
     """True/False when it can be decided mechanically, None when a human must look."""
     if not question.labelled or answer is None:
         return None
     if question.kind == "choice":
         return _choice(question, answer)
+    if question.kind == "temporal":
+        return _temporal(question, answer)
     given, truth = normalise(answer), normalise(question.answer)
     accepted = [truth, *(normalise(a) for a in question.accept)]
 

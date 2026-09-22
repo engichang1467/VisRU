@@ -95,6 +95,17 @@ def build_server(ctx: ToolContext) -> MCPServer:
         return _call(ctx, "overlay", asset_id=asset_id, boxes=boxes, labels=labels,
                      from_artifact=from_artifact, marks=marks, box=box)
 
+    @mcp.tool(description=desc["cross_check"])
+    def cross_check(kind: str, artifacts: list[str], value: str | int | None = None,
+                    box: list[float] | None = None,
+                    marks: list | None = None) -> list[Image | str]:
+        return _call(ctx, "cross_check", kind=kind, artifacts=artifacts, value=value,
+                     box=box, marks=marks)
+
+    @mcp.tool(description=desc["coverage"])
+    def coverage() -> list[Image | str]:
+        return _call(ctx, "coverage")
+
     @mcp.tool(description=desc["submit_report"])
     def submit_report(claims: list[dict]) -> list[Image | str]:
         return _call(ctx, "submit_report", claims=claims)

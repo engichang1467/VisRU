@@ -32,13 +32,14 @@ class Mark:
 @dataclass(frozen=True)
 class Artifact:
     id: str
-    kind: str  # view | contact_sheet | detect | segment | overlay | plot
+    kind: str  # view | contact_sheet | detect | segment | ocr | overlay | check
     path: str  # workspace-relative
     parent: str | None  # asset ref or another artifact ID
     params: dict[str, Any] = field(default_factory=dict)
     transform: dict[str, Any] | None = None
     marks: list[dict[str, Any]] = field(default_factory=list)
     created: str = ""
+    session: str = ""  # which session made it; `coverage` reads a session's own views
 
     @property
     def view_transform(self) -> ViewTransform | None:
@@ -55,8 +56,9 @@ class Artifact:
 
 
 class ArtifactStore:
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, session: str = ""):
         self.root = Path(root).resolve()
+        self.session = session
         self.dir = self.root / ARTIFACT_DIR
         self.dir.mkdir(parents=True, exist_ok=True)
         self._next = 1 + max((int(p.stem[2:]) for p in self.dir.glob("a_*.json")), default=0)
@@ -100,9 +102,15 @@ class ArtifactStore:
             transform=asdict(transform) if transform else None,
             marks=[asdict(m) for m in stored],
             created=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            session=self.session,
         )
         (self.dir / f"{artifact_id}.json").write_text(json.dumps(asdict(art), indent=1))
         return art
+
+    def all(self) -> list[Artifact]:
+        """Every artifact in the workspace, oldest first."""
+        return [self.load(p.stem) for p in sorted(self.dir.glob("a_*.json"),
+                                                key=lambda p: int(p.stem[2:]))]
 
     def load_mask(self, artifact_id: str, mark_id: int) -> Image.Image:
         """The mask for one mark, in the artifact's own view frame.

@@ -44,7 +44,7 @@ class ToolContext:
         self.root = Path(root)
         self.cfg = cfg
         self.session = session or f"s_{datetime.now():%Y%m%d_%H%M%S}"
-        self.artifacts = ArtifactStore(self.root)
+        self.artifacts = ArtifactStore(self.root, self.session)
         self._registry = Registry.load(self.root)
         self._stamp = self._registry_stamp()
 

@@ -188,7 +188,8 @@ def test_server_exposes_the_tools(ctx):
     tools = asyncio.run(build_server(ctx).list_tools())
     assert {t.name for t in tools} == {"list_assets", "view", "sample_frames",
                                        "detect", "segment", "ocr", "overlay",
-                                       "cross_check", "coverage", "submit_report"}
+                                       "cross_check", "coverage", "submit_report", "search",
+                                       "track"}
     by_name = {t.name: t.description for t in tools}
     # Every tool that takes coordinates must say whose pixels they are.
     for name in ("view", "detect", "segment", "overlay"):
@@ -302,15 +303,17 @@ def test_server_signatures_match_the_registry():
     from visru.tools import registry
 
     # name no single asset to work on
-    assetless = {"list_assets", "submit_report", "cross_check", "coverage"}
+    assetless = {"list_assets", "submit_report", "cross_check", "coverage", "search"}
     for spec in registry.SPECS:
         if spec.name not in assetless:
             assert spec.params[0].name == "asset_id", spec.name
 
     srv = build_server(open_workspace("."))
     tools = {t.name: t for t in asyncio.run(srv.list_tools())}
-    assert set(tools) == set(registry.TOOLS)
+    assert set(tools) == set(registry.TOOLS) - registry.HARNESS_ONLY
     for name, spec in registry.TOOLS.items():
+        if name in registry.HARNESS_ONLY:
+            continue
         declared = [p.name for p in spec.params]
         exposed = list(tools[name].input_schema.get("properties", {}))
         assert declared == exposed, f"{name}: registry {declared} != MCP {exposed}"

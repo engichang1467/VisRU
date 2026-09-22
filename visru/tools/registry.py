@@ -19,6 +19,7 @@ together only by the MCP server passing everything positionally.
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from visru.agent import subagents
 from visru.tools import ToolContext, ToolResult
 from visru.tools import navigate, search, verify
 
@@ -27,6 +28,10 @@ from visru.tools import navigate, search, verify
 USER_ERRORS = (ValueError, KeyError, IndexError, FileNotFoundError, NotADirectoryError)
 
 REQUIRED = object()  # sentinel: distinct from a legitimate None default
+
+# Tools that only work inside visru's own loop. `delegate` runs child sessions on
+# the loop's model; an MCP client such as Claude Code has its own subagents.
+HARNESS_ONLY = {"delegate"}
 
 
 @dataclass(frozen=True)
@@ -117,17 +122,53 @@ than that, listing every problem at once:
     yourself ({"methods": ..., "result": "agree"}) never earn it
   - if any check disagrees, the claim is `contested`"""
 
+SEARCH_DESC = """Find where, and in a video when, something appears, by text query.
+
+Ranks the workspace's embedding index (every image, and video frames sampled
+about once a second) against a short description ("a person opening a fridge").
+asset_id limits it to one asset; t0/t1 to a time range in seconds. For video,
+hits on neighbouring samples merge into time windows, listed as marks.
+
+Scores are relative and coarse: a window says where to look, not what happened.
+Confirm it with sample_frames over the window and view on a frame ref."""
+
+TRACK_DESC = """Follow objects through a video from one frame, with SAM 2's memory.
+
+asset_id is the starting frame, `vid_<id>#<frame_index>`. Prompt objects there as
+in segment — points [[x, y], ...] (one object per point), boxes, or
+from_artifact + marks from a detect on that frame — all in SOURCE-ASSET pixels.
+Tracks forward to t1 seconds (default: the end), every `stride` frames.
+
+Reports per object when it is present and when it drops out, plus a sheet of
+tracked frames with boxes. Use it for "when did X appear, leave, stop, fall".
+A track sharing SAM 2 with segment is not an independent check of it."""
+
+DELEGATE_DESC = """Split a video into time windows and give each to a subagent.
+
+Each subagent is a fresh session with its own context and every tool but this
+one; it investigates `question` inside its window and reports claims with
+evidence. You get back their claims and artifact IDs as text, not their images.
+
+windows is [[t0, t1], ...] in seconds (at most 8); omit it for n equal windows.
+Use it on long videos, where one context cannot hold enough frames at useful
+scale. It costs a session per window: prefer search and sample_frames first."""
+
 CROSS_CHECK_DESC = """Compare two independent methods' readings and record the verdict.
 
-kind: count | text | localize. artifacts: IDs from at least two methods on the
-same asset — view, detect, segment, or ocr. A `view` artifact stands for YOUR
+kind: count | text | localize | temporal. artifacts: IDs from at least two
+methods on the same asset — view, detect, segment, or ocr. A `view` artifact stands for YOUR
 reading of it, so pass `value` (the count or the text) or, for localize, `box`
 in source-asset pixels. detect/segment/ocr artifacts speak through their marks;
 `marks` narrows them, one entry per artifact (an ID, a list of IDs, or null).
 
+kind temporal compares time windows in one video: a search window or a track
+(`marks` picks which), against your reading of a view or sample_frames sheet
+passed as value="t0..t1" seconds.
+
 Agreement: counts equal, text equal after normalising case, punctuation and
-spacing, boxes at IoU >= 0.5. Methods sharing a model or a lineage (a mask
-prompted from a detection, a view of a detect artifact) are refused.
+spacing, boxes at IoU >= 0.5, windows with both ends within 1 s. Methods sharing
+a model or a lineage (a mask prompted from a detection, a view of a detect
+artifact, a view and a contact sheet) are refused.
 Returns a check artifact ID; cite it in the claim's checks to earn verified."""
 
 
@@ -170,6 +211,18 @@ SPECS: tuple[ToolSpec, ...] = (
         ),
     ),
     ToolSpec(
+        name="search",
+        fn=search.search,
+        description=SEARCH_DESC,
+        params=(
+            Param("query", _STR),
+            Param("asset_id", _STR, None),
+            Param("t0", _NUM, None),
+            Param("t1", _NUM, None),
+            Param("k", _INT, 8),
+        ),
+    ),
+    ToolSpec(
         name="detect",
         fn=search.detect,
         description=("Find objects by open-vocabulary text query, drawn as numbered "
@@ -198,6 +251,22 @@ SPECS: tuple[ToolSpec, ...] = (
             Param("from_artifact", _STR, None),
             Param("marks", _INTS, None),
             Param("box", _box("region to render and work in"), None),
+        ),
+    ),
+    ToolSpec(
+        name="track",
+        fn=search.track,
+        description=TRACK_DESC,
+        params=(
+            Param("asset_id", _STR),
+            Param("points", _POINTS, None),
+            Param("labels", _INTS, None),
+            Param("boxes", _POINTS, None),
+            Param("from_artifact", _STR, None),
+            Param("marks", _INTS, None),
+            Param("t1", _NUM, None),
+            Param("stride", _INT, 1),
+            Param("max_frames", _INT, 150),
         ),
     ),
     ToolSpec(
@@ -237,11 +306,23 @@ SPECS: tuple[ToolSpec, ...] = (
         fn=verify.cross_check,
         description=CROSS_CHECK_DESC,
         params=(
-            Param("kind", {**_STR, "enum": ["count", "text", "localize"]}),
+            Param("kind", {**_STR, "enum": ["count", "text", "localize", "temporal"]}),
             Param("artifacts", _STRS),
             Param("value", {"type": ["string", "integer"]}, None),
             Param("box", {"type": "array", "items": {"type": "number"}}, None),
             Param("marks", {"type": "array"}, None),
+        ),
+    ),
+    ToolSpec(
+        name="delegate",
+        fn=subagents.delegate,
+        description=DELEGATE_DESC,
+        params=(
+            Param("asset_id", _STR),
+            Param("question", _STR),
+            Param("windows", _POINTS, None),
+            Param("n", _INT, 4),
+            Param("max_steps", _INT, 15),
         ),
     ),
     ToolSpec(

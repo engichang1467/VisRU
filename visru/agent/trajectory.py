@@ -24,7 +24,7 @@ from PIL import Image
 
 from visru.tools import ToolContext, resolve_ref
 from visru.tools.annotate import draw_grid, draw_marks
-from visru.tools.navigate import build_sheet, render_region
+from visru.tools.navigate import build_sheet, render_region, sheet_boxes
 
 TRAJECTORY_DIR = ".visru/trajectory"
 
@@ -127,6 +127,9 @@ def replay_artifact(ctx: ToolContext, artifact_id: str) -> Image.Image:
     if art.kind == "contact_sheet":
         return build_sheet(ctx, art.parent, art.params["n"],
                            art.params.get("t0"), art.params.get("t1")).image
+    if art.kind in ("search", "track"):
+        return build_sheet(ctx, art.parent, times=art.params["times"],
+                           boxes=sheet_boxes(art.params.get("sheet_boxes"))).image
 
     asset, _ = resolve_ref(ctx, art.parent)
     img, tf, _ = render_region(ctx, asset, art.params.get("box"))

@@ -67,6 +67,11 @@ def build_server(ctx: ToolContext) -> MCPServer:
                       t1: float | None = None) -> list[Image | str]:
         return _call(ctx, "sample_frames", asset_id=asset_id, n=n, t0=t0, t1=t1)
 
+    @mcp.tool(description=desc["search"])
+    def search(query: str, asset_id: str | None = None, t0: float | None = None,
+               t1: float | None = None, k: int = 8) -> list[Image | str]:
+        return _call(ctx, "search", query=query, asset_id=asset_id, t0=t0, t1=t1, k=k)
+
     @mcp.tool(description=desc["detect"])
     def detect(asset_id: str, queries: list[str], box: list[int] | None = None,
                threshold: float = 0.1, max_marks: int = 20) -> list[Image | str]:
@@ -80,6 +85,16 @@ def build_server(ctx: ToolContext) -> MCPServer:
                 box: list[int] | None = None) -> list[Image | str]:
         return _call(ctx, "segment", asset_id=asset_id, points=points, labels=labels,
                      boxes=boxes, from_artifact=from_artifact, marks=marks, box=box)
+
+    @mcp.tool(description=desc["track"])
+    def track(asset_id: str, points: list[list[float]] | None = None,
+              labels: list[int] | None = None, boxes: list[list[float]] | None = None,
+              from_artifact: str | None = None, marks: list[int] | None = None,
+              t1: float | None = None, stride: int = 1,
+              max_frames: int = 150) -> list[Image | str]:
+        return _call(ctx, "track", asset_id=asset_id, points=points, labels=labels,
+                     boxes=boxes, from_artifact=from_artifact, marks=marks, t1=t1,
+                     stride=stride, max_frames=max_frames)
 
     @mcp.tool(description=desc["ocr"])
     def ocr(asset_id: str, box: list[int] | None = None,

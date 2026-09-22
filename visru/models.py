@@ -16,6 +16,7 @@ SEGMENT_MODEL = os.environ.get("VISRU_SEGMENT_MODEL", "facebook/sam2.1-hiera-sma
 DETECT_TEXT_MODEL = os.environ.get("VISRU_TEXT_DETECT_MODEL", "PP-OCRv5_mobile_det")
 RECOGNISE_TEXT_MODEL = os.environ.get("VISRU_TEXT_RECOGNISE_MODEL", "en_PP-OCRv5_mobile_rec")
 TEXT_DET_SIDE = int(os.environ.get("VISRU_TEXT_DET_SIDE", "1280"))
+EMBED_MODEL = os.environ.get("VISRU_EMBED_MODEL", "google/siglip-base-patch16-224")
 
 
 def device() -> str:
@@ -48,6 +49,57 @@ def segmenter():
     processor = Sam2Processor.from_pretrained(SEGMENT_MODEL)
     model = Sam2Model.from_pretrained(SEGMENT_MODEL, dtype=dtype())
     return processor, model.to(device()).eval()
+
+
+@functools.cache
+def video_segmenter():
+    """SAM 2 with memory: one prompt on one frame, masks propagated through the rest."""
+    from transformers import Sam2VideoModel, Sam2VideoProcessor
+
+    processor = Sam2VideoProcessor.from_pretrained(SEGMENT_MODEL)
+    model = Sam2VideoModel.from_pretrained(SEGMENT_MODEL, dtype=dtype())
+    return processor, model.to(device()).eval()
+
+
+class Embedder:
+    """SigLIP image and text embeddings, L2-normalised so a dot product is cosine."""
+
+    def __init__(self, name: str):
+        from transformers import AutoModel, AutoProcessor
+
+        self.name = name
+        self.processor = AutoProcessor.from_pretrained(name)
+        self.model = AutoModel.from_pretrained(name, dtype=dtype()).to(device()).eval()
+
+    @staticmethod
+    def _unit(features):
+        # transformers 5 returns an output object from get_*_features; 4.x a tensor.
+        features = getattr(features, "pooler_output", features)
+        features = features.float()
+        return (features / features.norm(dim=-1, keepdim=True)).cpu().numpy()
+
+    def images(self, images):
+        import torch
+
+        inputs = self.processor(images=images, return_tensors="pt").to(device())
+        with torch.no_grad():
+            return self._unit(self.model.get_image_features(
+                pixel_values=inputs["pixel_values"].to(dtype())))
+
+    def text(self, text: str):
+        import torch
+
+        # SigLIP was trained on max_length padding; shorter padding skews the scores.
+        inputs = self.processor(text=[text], padding="max_length",
+                                return_tensors="pt").to(device())
+        with torch.no_grad():
+            return self._unit(self.model.get_text_features(**inputs))[0]
+
+
+@functools.cache
+def embedder() -> Embedder:
+    """SigLIP: one vector per image or video keyframe, and per text query."""
+    return Embedder(EMBED_MODEL)
 
 
 @functools.cache
@@ -92,5 +144,5 @@ def reader():
 
 def unload() -> None:
     """Drop cached models. For tests and for freeing VRAM between heavy tools."""
-    for fn in (detector, segmenter, reader):
+    for fn in (detector, segmenter, video_segmenter, reader, embedder):
         fn.cache_clear()

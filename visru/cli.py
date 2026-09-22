@@ -25,8 +25,16 @@ BANNER = "\n".join([
 
 
 @app.command()
-def index(workspace: str, verbose: bool = False) -> None:
-    """Build the asset registry for a folder."""
+def index(
+    workspace: str,
+    verbose: bool = False,
+    embed: bool = typer.Option(False, "--embed",
+                               help="also build the SigLIP index `search` reads "
+                                    "(needs the [tools] extra)"),
+    embed_fps: float = typer.Option(1.0, "--embed-fps",
+                                    help="video frames embedded per second"),
+) -> None:
+    """Build the asset registry for a folder, and optionally its embedding index."""
     root = Path(workspace).expanduser().resolve()
     if not root.is_dir():
         raise typer.BadParameter(f"{root} is not a directory")
@@ -41,6 +49,15 @@ def index(workspace: str, verbose: bool = False) -> None:
         for asset in reg.list():
             typer.echo(asset.summary())
     typer.echo(f"{len(reg.assets)} assets in {root} ({stats.summary()})")
+
+    if embed:
+        from visru.workspace import index as embedding_index
+
+        built, added = embedding_index.build(
+            root, reg, fps=embed_fps,
+            progress=lambda a: typer.echo(f"  embedded {a.name}") if verbose else None)
+        typer.echo(f"{len(built)} vectors from {len(built.assets())} assets "
+                   f"({added} newly embedded, {built.model})")
 
 
 @app.command()

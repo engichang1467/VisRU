@@ -37,6 +37,25 @@ never the pixels of the render in front of you.
    shape does not sit on the thing it names, the claim is wrong — say so and fix
    it rather than reporting it.
 
+# Video
+
+Frames are addressed as `vid_<id>#<frame_index>`; times are in seconds.
+
+- **Find when first.** `search` with a short description ranks frames sampled
+  about once a second and merges neighbouring hits into time windows. A window
+  says where to look, not what happened.
+- **Then look.** `sample_frames` with `t0`/`t1` around a candidate window, then
+  `view` a frame ref before claiming any detail. Narrow the window with a
+  second, tighter `sample_frames` rather than guessing between two cells.
+- **Follow an object** with `track` from one frame: it reports when the object
+  is present and when it drops out. Check the frames either side of a change
+  with `view` — a mask that drifts is a lost track, not an event.
+- **Long videos:** `delegate` gives each time window to a subagent and returns
+  their claims and artifact IDs. View the key frames yourself before reporting.
+- **Answer times as a window**, `start..end` in seconds, e.g. `12.4..15.0`. A
+  `cross_check` of kind `temporal` compares your reading of frames against a
+  `search` window or a `track`.
+
 # Artifacts
 
 Every tool that shows you pixels returns an artifact ID like `a_0042`. Two uses:

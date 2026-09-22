@@ -118,9 +118,10 @@ Trajectories are cheap to store and impossible to recover later.
 | Navigate | `list_assets` | Filter assets by name, type, metadata | Registry |
 | | `view` | Render a region at the model's max resolution, optional source-pixel grid | Pillow |
 | | `sample_frames` | Contact sheet of N frames over a time range | PyAV |
-| Search | `search` | Text or image query over the embedding index | SigLIP + FAISS |
+| Search | `search` | Text query over the embedding index; video hits merge into time windows | SigLIP |
 | | `detect` | Open-vocabulary boxes, rendered as marks | OWLv2 or Grounding DINO |
-| | `segment` | Masks from points, boxes, or marks; video propagation | SAM 2 |
+| | `segment` | Masks from points, boxes, or marks | SAM 2 |
+| | `track` | Propagate masks through a video from one frame; when an object is present | SAM 2 (video) |
 | | `ocr` | Text with boxes | PaddleOCR |
 | Measure | `python` | Sandboxed kernel with numpy, OpenCV, workspace mounted read-only | Jupyter kernel |
 | | `depth` | Monocular depth | Depth Anything V2 |
@@ -130,6 +131,7 @@ Trajectories are cheap to store and impossible to recover later.
 | Verify | `overlay` | Render claimed geometry on the source and return it for re-inspection | Pillow |
 | | `cross_check` | Answer the same question with independent methods and compare | Harness |
 | | `coverage` | Viewed regions and frames, by scale | Context manager |
+| Delegate | `delegate` | One subagent per time window of a video (visru loop only, not MCP) | Harness |
 | Finish | `submit_report` | Submit claims with evidence IDs; rejects malformed claims | Ledger |
 
 In fp16, the Phase 0 model set (OWLv2, SAM 2, SigLIP, Depth Anything V2) fits on one 24 GB GPU with room to spare. Pointmap models are the exception: VGGT memory grows with the number of views.
@@ -151,14 +153,14 @@ visru/
 │   │   ├── loop.py             # tool-use loop, stop conditions
 │   │   ├── context.py          # live-image budget, elision, compaction
 │   │   ├── coverage.py         # per-asset viewed-region maps
-│   │   ├── subagents.py        # shard work by region, time window, or file
+│   │   ├── subagents.py        # one subagent per video time window
 │   │   └── prompts/system.md
 │   ├── backends/
 │   │   ├── anthropic.py
 │   │   └── openai_compat.py    # vLLM and open VLMs
 │   ├── workspace/
 │   │   ├── registry.py         # content-hash IDs, metadata
-│   │   ├── index.py            # embeddings + FAISS
+│   │   ├── index.py            # SigLIP embeddings per image and keyframe
 │   │   ├── video.py            # decoding, keyframes
 │   │   └── artifacts.py        # derived images with provenance
 │   ├── tools/
@@ -309,6 +311,55 @@ scorer prints accuracy per arm and category, mean cost per question, and, for
 agent runs, accuracy grouped by the ledger status of the `answer` claim with a
 95% Wilson interval. That grouping is the first measurement of `verified` against
 `supported`.
+
+## Quick start (Phase 3)
+
+Video gets an embedding index, search over time, tracking, and subagents. Build
+the index once per workspace (needs the `[tools]` extra; SigLIP runs on CPU too):
+
+```bash
+visru index sample_data --embed              # one vector per image, 1 per second of video
+visru run sample_data --task "In trial_01.mp4, when is the street-name sign legible?"
+```
+
+The model can now call `search` ("a street-name sign") to get candidate time
+windows, `sample_frames` over one, `track` an object forward from a frame to see
+when it appears or drops out, and `delegate` a long video to one subagent per
+window. `cross_check` has a `temporal` kind, so a time window read off the frames
+can be verified against a `search` window or a `track`.
+
+The exit criterion runs on Charades-STA: sentence-to-moment queries with labelled
+start and end times. The importer reads the four video zips (~16 GB) over HTTP
+range requests and extracts only the sampled videos. Charades is licensed for
+non-commercial research use.
+
+```bash
+python -m evals.import_bench charades_sta --sample 50     # bench/charades_sta
+visru index bench/charades_sta --embed
+
+B=bench/charades_sta; Q=$B/questions.jsonl
+python -m evals.baseline --workspace $B --questions $Q
+python -m evals.agent --workspace $B --questions $Q --arm no_subagents \
+    --out evals/runs/nosub_charades.jsonl
+python -m evals.agent --workspace $B --questions $Q --arm full \
+    --out evals/runs/full_charades.jsonl
+python -m evals.score --questions $Q evals/runs/baseline_*.jsonl \
+    evals/runs/nosub_charades.jsonl evals/runs/full_charades.jsonl
+```
+
+Questions are kind `temporal`, answered as `start..end` in seconds. A window is
+correct when both ends are within the question's `tolerance`, 1.0 s, written into
+the question file at import, before any run. An answer that is not exactly two
+numbers goes to `review`, like an ambiguous count.
+
+**Exit target, fixed before the first run:** the `full` arm localizes at least 50%
+of the 50 sampled questions within ±1.0 s on both ends, and beats the single-pass
+baseline on the same questions.
+
+Charades-STA is everyday indoor activity, not robot failures: it measures temporal
+localization, not the semantics of a failure window. A hand-labelled set of
+rollouts can use the same question format (`"kind": "temporal"`,
+`"answer": "37.5..40.5"`, `"tolerance": 1.0`) without code changes.
 
 ## Implementation notes
 

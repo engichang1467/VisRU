@@ -259,6 +259,83 @@ def test_bad_input_reaches_the_model_with_its_real_message(ctx):
     assert not isinstance(caught.value, UnexpectedToolError)
 
 
+# --- artifact refs (Phase 1: elision stubs must be redeemable) -----------
+def test_view_takes_an_artifact_id_and_returns_the_same_pixels(ctx):
+    """The context manager elides an image to a stub naming its artifact ID. That
+    stub is a promise the model can have the image back; here it is kept."""
+    im_id, _ = _ids(ctx)
+    first = view(ctx, im_id, box=[2800, 1800, 3200, 2200])
+    again = view(ctx, first.artifacts[0])
+
+    assert again.images[0].tobytes() == first.images[0].tobytes()
+    # Re-derived from the parent asset, so the transform still lands in source px.
+    assert f"box=[2800, 1800, 3200, 2200]" in again.text
+
+
+def test_an_explicit_box_still_wins_over_the_artifacts_own(ctx):
+    """Every box the model sends is source-asset pixels, whatever ref it names."""
+    im_id, _ = _ids(ctx)
+    art = view(ctx, im_id, box=[2800, 1800, 3200, 2200]).artifacts[0]
+    zoomed = view(ctx, art, box=[2900, 1900, 3000, 2000])
+    assert "box=[2900, 1900, 3000, 2000]" in zoomed.text
+
+
+def test_an_artifact_chain_resolves_back_to_the_asset(ctx):
+    im_id, _ = _ids(ctx)
+    a = view(ctx, im_id, box=[2800, 1800, 3200, 2200]).artifacts[0]
+    b = view(ctx, a).artifacts[0]
+    assert view(ctx, b).images[0].tobytes() == view(ctx, im_id,
+                                                    box=[2800, 1800, 3200, 2200]).images[0].tobytes()
+    # Lineage survives: the ledger must not call a re-view an independent check.
+    assert ctx.artifacts.load(b).parent == a
+
+
+def test_an_artifact_with_no_parent_says_so(ctx):
+    orphan = ctx.artifacts.save(Image.new("RGB", (8, 8)), kind="view")
+    with pytest.raises(ValueError, match="pass an asset ID instead"):
+        view(ctx, orphan.id)
+
+
+# --- tool registry -------------------------------------------------------
+def test_server_signatures_match_the_registry():
+    """MCP needs real signatures, the loop needs the table; they must agree."""
+    from visru.tools import registry
+
+    assetless = {"list_assets", "submit_report"}  # name no asset to work on
+    for spec in registry.SPECS:
+        assert spec.params, spec.name
+        if spec.name not in assetless:
+            assert spec.params[0].name == "asset_id", spec.name
+
+    srv = build_server(open_workspace("."))
+    tools = {t.name: t for t in asyncio.run(srv.list_tools())}
+    assert set(tools) == set(registry.TOOLS)
+    for name, spec in registry.TOOLS.items():
+        declared = [p.name for p in spec.params]
+        exposed = list(tools[name].input_schema.get("properties", {}))
+        assert declared == exposed, f"{name}: registry {declared} != MCP {exposed}"
+
+
+def test_registry_rejects_calls_the_model_can_fix(ctx):
+    from visru.tools import registry
+
+    im_id, _ = _ids(ctx)
+    with pytest.raises(KeyError, match="no tool named"):
+        registry.execute(ctx, "zoom", {})
+    with pytest.raises(ValueError, match="unknown argument"):
+        registry.execute(ctx, "view", {"asset_id": im_id, "bbox": [0, 0, 9, 9]})
+    with pytest.raises(ValueError, match="needs asset_id"):
+        registry.execute(ctx, "view", {})
+
+
+def test_registry_defaults_match_calling_the_tool_directly(ctx):
+    from visru.tools import registry
+
+    im_id, _ = _ids(ctx)
+    through = registry.execute(ctx, "view", {"asset_id": im_id})
+    assert through.images[0].size == view(ctx, im_id).images[0].size
+
+
 def test_artifact_ids_skip_past_another_process_writes(ctx, marker_workspace):
     from visru.workspace.artifacts import ArtifactStore
 

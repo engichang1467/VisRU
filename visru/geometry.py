@@ -20,6 +20,15 @@ class ViewTransform:
         return (x - self.x0) * self.scale, (y - self.y0) * self.scale
 
 
+def visual_tokens(w: int, h: int, patch: int = 28) -> int:
+    """What an image of this rendered size costs in context.
+
+    The context manager budgets with this and `fit_render_size` renders against
+    it, so the two can never disagree about what an image costs.
+    """
+    return math.ceil(w / patch) * math.ceil(h / patch)
+
+
 def fit_render_size(
     w: int,
     h: int,
@@ -38,6 +47,6 @@ def fit_render_size(
     s = min(max_upscale, max_edge / max(w, h))
     while True:
         rw, rh = max(1, round(w * s)), max(1, round(h * s))
-        if math.ceil(rw / patch) * math.ceil(rh / patch) <= max_visual_tokens:
+        if visual_tokens(rw, rh, patch) <= max_visual_tokens:
             return rw, rh, s
         s *= 0.98

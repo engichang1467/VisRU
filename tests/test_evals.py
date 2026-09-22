@@ -91,7 +91,7 @@ def test_a_human_verdict_overrides_the_grader(tmp_path):
 def test_the_shipped_starter_set_parses_and_is_honest_about_labels():
     questions = suite.load("evals/questions.example.jsonl")
     assert len(questions) >= 5
-    # Unlabelled entries must stay unlabelled: filling them from an agent's own
-    # report would make the exit criterion circular.
-    assert any(not q.labelled for q in questions)
+    # Every shipped entry carries a human-verified label; an unlabelled one is
+    # never graded, so it would silently shrink the exit criterion's denominator.
+    assert all(q.labelled for q in questions)
     assert all(q.kind in suite.KINDS for q in questions)

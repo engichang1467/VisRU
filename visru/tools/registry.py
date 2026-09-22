@@ -108,15 +108,27 @@ Each claim is an object:
   text:     what you are asserting
   status:   verified | supported | contested | hypothesis
   evidence: ["a_0005", "a_0007"] — artifact IDs that show it
-  checks:   [{"kind": "cross_tool", "methods": ["detect", "segment"],
-              "artifacts": ["a_0005", "a_0006"], "result": "agree"}]
+  checks:   ["a_0009"] — artifact IDs returned by cross_check
 
 The ledger decides what your evidence warrants and rejects any status stronger
 than that, listing every problem at once:
   - a claim with no evidence must be `hypothesis`
-  - `verified` needs a passing check whose two methods do not share a model —
-    a mask prompted from a detector box inherits the detector's errors
+  - `verified` needs a cross_check artifact that agreed; checks you describe
+    yourself ({"methods": ..., "result": "agree"}) never earn it
   - if any check disagrees, the claim is `contested`"""
+
+CROSS_CHECK_DESC = """Compare two independent methods' readings and record the verdict.
+
+kind: count | text | localize. artifacts: IDs from at least two methods on the
+same asset — view, detect, segment, or ocr. A `view` artifact stands for YOUR
+reading of it, so pass `value` (the count or the text) or, for localize, `box`
+in source-asset pixels. detect/segment/ocr artifacts speak through their marks;
+`marks` narrows them, one entry per artifact (an ID, a list of IDs, or null).
+
+Agreement: counts equal, text equal after normalising case, punctuation and
+spacing, boxes at IoU >= 0.5. Methods sharing a model or a lineage (a mask
+prompted from a detection, a view of a detect artifact) are refused.
+Returns a check artifact ID; cite it in the claim's checks to earn verified."""
 
 
 SPECS: tuple[ToolSpec, ...] = (
@@ -221,6 +233,27 @@ SPECS: tuple[ToolSpec, ...] = (
         ),
     ),
     ToolSpec(
+        name="cross_check",
+        fn=verify.cross_check,
+        description=CROSS_CHECK_DESC,
+        params=(
+            Param("kind", {**_STR, "enum": ["count", "text", "localize"]}),
+            Param("artifacts", _STRS),
+            Param("value", {"type": ["string", "integer"]}, None),
+            Param("box", {"type": "array", "items": {"type": "number"}}, None),
+            Param("marks", {"type": "array"}, None),
+        ),
+    ),
+    ToolSpec(
+        name="coverage",
+        fn=verify.coverage,
+        description=("What this session has looked at: per asset, the share viewed "
+                     "at or above inspected_scale and at any scale, frames for video, "
+                     "and assets never viewed. Call it before submit_report and say "
+                     "what you did not inspect."),
+        params=(),
+    ),
+    ToolSpec(
         name="submit_report",
         fn=verify.submit_report,
         description=SUBMIT_DESC,
@@ -233,15 +266,21 @@ SPECS: tuple[ToolSpec, ...] = (
 TOOLS: dict[str, ToolSpec] = {spec.name: spec for spec in SPECS}
 
 
-def schemas() -> list[dict[str, Any]]:
-    """Tool definitions in the shape every provider's API wants."""
+def schemas(names: list[str] | None = None) -> list[dict[str, Any]]:
+    """Tool definitions in the shape every provider's API wants.
+
+    `names` restricts the set, which is how the eval arms (zoom-only, full) differ.
+    """
     return [{"name": s.name, "description": s.description,
-             "input_schema": s.json_schema()} for s in SPECS]
+             "input_schema": s.json_schema()} for s in SPECS
+            if names is None or s.name in names]
 
 
-def execute(ctx: ToolContext, name: str, arguments: dict[str, Any]) -> ToolResult:
+def execute(ctx: ToolContext, name: str, arguments: dict[str, Any],
+            allowed: list[str] | None = None) -> ToolResult:
     """Run one tool call. Raises USER_ERRORS for anything the model can fix."""
     spec = TOOLS.get(name)
-    if spec is None:
-        raise KeyError(f"no tool named {name!r}; have {', '.join(sorted(TOOLS))}")
+    if spec is None or (allowed is not None and name not in allowed):
+        have = sorted(TOOLS) if allowed is None else sorted(allowed)
+        raise KeyError(f"no tool named {name!r}; have {', '.join(have)}")
     return spec.fn(ctx, *spec.bind(arguments))

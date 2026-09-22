@@ -269,6 +269,47 @@ submits a report the ledger accepts.
 To exercise the loop without API spend, pass `--backend replay --script turns.json`,
 where the script is a JSON list of turns (`{"text", "calls": [{"name", "arguments"}]}`).
 
+## Quick start (Phase 2)
+
+A reported session also writes `.visru/reports/<session>.html`: each claim beside
+its evidence and checks, plus a coverage table. Re-render any session with:
+
+```bash
+visru report sample_data            # latest session
+visru report sample_data s_20260921_101500
+```
+
+`verified` now comes only from the harness. The model calls `cross_check` with
+artifacts from two methods (and its own reading, if one of them is a `view`); the
+tool refuses pairs that share a model or lineage, compares the readings, and
+saves the verdict as a `check` artifact. A claim cites that ID in `checks`. A
+check the model writes out itself can still make a claim `contested`, but never
+`verified`.
+
+Benchmarks and the three arms:
+
+```bash
+python -m evals.import_bench vstar          # bench/vstar, 191 questions
+python -m evals.import_bench hrbench_4k     # bench/hrbench_4k, 200 (rotation 0 only)
+python -m evals.import_bench hrbench_8k     # bench/hrbench_8k, 200
+
+B=bench/vstar; Q=$B/questions.jsonl
+python -m evals.baseline --workspace $B --questions $Q --sample 100
+python -m evals.agent --workspace $B --questions $Q --sample 100 --arm zoom_only \
+    --out evals/runs/zoom_only_vstar.jsonl
+python -m evals.agent --workspace $B --questions $Q --sample 100 --arm full \
+    --out evals/runs/full_vstar.jsonl
+python -m evals.score --questions $Q evals/runs/baseline_*.jsonl \
+    evals/runs/zoom_only_vstar.jsonl evals/runs/full_vstar.jsonl
+```
+
+`--sample N --seed S` draws the same questions for every arm. An agent run
+appends a row per question and resumes if re-run with the same `--out`. The
+scorer prints accuracy per arm and category, mean cost per question, and, for
+agent runs, accuracy grouped by the ledger status of the `answer` claim with a
+95% Wilson interval. That grouping is the first measurement of `verified` against
+`supported`.
+
 ## Implementation notes
 
 ### Model image limits
@@ -517,9 +558,9 @@ artifact and its ID is printed at the end, so what the baseline was shown stays
 inspectable. `--model` overrides the model in `visru.toml` and `--frames` sets the
 contact-sheet size.
 
-The tool arm has no runner yet. Run the questions through Claude Code with the MCP
-server attached and record the answers by hand, in the same shape, as
-`evals/runs/tools_<date>.jsonl`:
+The tool arms run through `python -m evals.agent` (see Quick start (Phase 2)).
+To score a Claude Code session driven through the MCP server instead, record its
+answers by hand in the same shape as `evals/runs/tools_<date>.jsonl`:
 
 ```json
 {"id": "q01", "arm": "tools", "answer": "TRADER JOE'S"}

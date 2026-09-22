@@ -7,7 +7,10 @@ A question file is JSONL, one object per line:
      "question": "What does the vertical neon sign on the right read?",
      "answer": "TRADER JOE'S",                  # null until a human labels it
      "accept": ["trader joes"],                 # optional extra spellings
-     "kind": "text"}                            # text | count | localize | temporal
+     "kind": "text"}                            # text | count | localize | temporal | choice
+
+A `choice` question also carries `options` (["rubber", "cotton", ...]) and its
+answer is the option letter, as in V* Bench and HR-Bench.
 
 `answer` is ground truth a person established by looking. Do not seed it from an
 agent's own report: grading a run against answers that run produced measures
@@ -20,13 +23,17 @@ Check a set before spending API calls on it:
 
 import argparse
 import json
+import random
 import re
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-KINDS = ("text", "count", "localize", "temporal")
+from visru.tools.verify import normalise
+
+KINDS = ("text", "count", "localize", "temporal", "choice")
+LETTERS = "ABCDEFGHIJ"
 
 
 @dataclass(frozen=True)
@@ -39,6 +46,8 @@ class Question:
     kind: str = "text"
     box: list[int] | None = None  # optional region hint, for localize questions
     note: str = ""
+    options: list[str] = field(default_factory=list)  # choice questions, in letter order
+    category: str = ""  # benchmark subset, e.g. direct_attributes, single, cross
 
     @property
     def labelled(self) -> bool:
@@ -63,9 +72,21 @@ def load(path: str | Path) -> list[Question]:
             raise ValueError(f"{path}:{n}: duplicate question id {q.id!r}")
         if q.kind not in KINDS:
             raise ValueError(f"{path}:{n}: kind {q.kind!r} not in {list(KINDS)}")
+        if (q.kind == "choice") != bool(q.options):
+            raise ValueError(f"{path}:{n}: options go with kind 'choice', and only there")
         seen.add(q.id)
         questions.append(q)
     return questions
+
+
+def select(questions: list[Question], sample: int | None,
+           seed: int) -> list[Question]:
+    """A fixed-seed sample, in file order, so every arm sees the same questions."""
+    labelled = [q for q in questions if q.labelled]
+    if sample is None or sample >= len(labelled):
+        return labelled
+    keep = set(q.id for q in random.Random(seed).sample(labelled, sample))
+    return [q for q in labelled if q.id in keep]
 
 
 def resolve(registry, asset: str) -> str:
@@ -80,20 +101,35 @@ def resolve(registry, asset: str) -> str:
     return matches[0].id
 
 
-def normalise(text: str) -> str:
-    """Lowercase, drop punctuation and spacing, so "TRADER JOE'S" == "trader joes".
+def prompt(q: Question) -> str:
+    """The question as the model sees it, with lettered options for a choice."""
+    if q.kind != "choice":
+        return q.question
+    lines = [q.question, *(f"({LETTERS[i]}) {o}" for i, o in enumerate(q.options)),
+             "Answer with the option's letter."]
+    return "\n".join(lines)
 
-    Apostrophes are deleted rather than spaced, or the possessive splits into a
-    stray token and a correct answer grades as wrong.
-    """
-    without_quotes = re.sub(r"['’ʼ]", "", str(text).lower())
-    return re.sub(r"[^a-z0-9]+", " ", without_quotes).strip()
+
+def _choice(question: Question, answer: str) -> bool | None:
+    letters = LETTERS[:len(question.options)]
+    head = re.match(r"^\W*([A-Z])\W*(?:\s|$)", str(answer).strip())
+    if head and head.group(1) in letters:  # capital only: "a cat" is not option A
+        return head.group(1) == str(question.answer).strip().upper()
+    given = normalise(answer)
+    named = [letters[i] for i, o in enumerate(question.options) if normalise(o) == given]
+    if named:
+        return named[0] == str(question.answer).strip().upper()
+    # A sentence naming one option is probably an answer, but a person decides.
+    mentioned = [o for o in question.options if normalise(o) and normalise(o) in given]
+    return None if mentioned else False
 
 
 def grade(question: Question, answer: str) -> bool | None:
     """True/False when it can be decided mechanically, None when a human must look."""
     if not question.labelled or answer is None:
         return None
+    if question.kind == "choice":
+        return _choice(question, answer)
     given, truth = normalise(answer), normalise(question.answer)
     accepted = [truth, *(normalise(a) for a in question.accept)]
 

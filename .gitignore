@@ -227,3 +227,5 @@ __marimo__/
 evals/runs/
 # working question set (cp evals/questions.example.jsonl evals/questions.jsonl)
 evals/questions.jsonl
+# imported benchmarks (python -m evals.import_bench <name>)
+bench/

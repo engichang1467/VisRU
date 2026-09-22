@@ -114,6 +114,17 @@ def test_a_submitted_report_exits_zero_and_names_its_ledger(indexed, tmp_path):
     assert len(written) == 1
     assert json.loads(written[0].read_text())["claims"][0]["claim_id"] == "c_1"
 
+    # `visru report` with no session renders the latest ledger.
+    rendered = runner.invoke(app, ["report", str(indexed)])
+    assert rendered.exit_code == 0, rendered.output
+    html = (indexed / ".visru" / "reports" / f"{written[0].stem}.html").read_text()
+    assert "There is a red marker." in html and "../artifacts/a_0001.png" in html
+
+
+def test_report_refuses_an_unknown_session(indexed):
+    result = runner.invoke(app, ["report", str(indexed), "s_nope"])
+    assert result.exit_code != 0 and "no ledger" in flat(result)
+
 
 def test_max_steps_is_honoured(indexed, tmp_path):
     asset = open_workspace(indexed).registry.list(kind="image")[0].id

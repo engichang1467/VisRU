@@ -6,6 +6,7 @@ from rich.console import Console
 
 from visru import backends
 from visru.agent import loop as agent_loop
+from visru.evidence import report as evidence_report
 from visru.tools import open_workspace
 from visru.workspace.registry import Registry
 
@@ -93,15 +94,29 @@ def run(
     if session.reported:
         console.print(f"[dim]ledger:     "
                       f"{ctx.root / '.visru/ledger' / (ctx.session + '.json')}[/]")
+        console.print(f"[dim]report:     {evidence_report.render(ctx.root, ctx.session)}[/]")
     else:
         console.print(f"[yellow]no report: the session {session.reason}[/]")
         raise typer.Exit(1)
 
 
 @app.command()
-def report(session: str) -> None:
-    """Render the evidence ledger to a static HTML report."""
-    raise NotImplementedError
+def report(
+    workspace: str,
+    session: str | None = typer.Argument(None, help="defaults to the latest ledger"),
+) -> None:
+    """Render a session's evidence ledger to a static HTML report."""
+    root = Path(workspace).expanduser().resolve()
+    if session is None:
+        found = evidence_report.sessions(root)
+        if not found:
+            raise typer.BadParameter(f"no ledgers in {root}; run `visru run` first")
+        session = found[-1]
+    try:
+        out = evidence_report.render(root, session)
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(str(exc)) from None
+    typer.echo(out)
 
 
 def main() -> None:

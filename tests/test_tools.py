@@ -184,18 +184,18 @@ def test_list_assets_filters_and_truncates(ctx):
 
 
 # --- MCP server ----------------------------------------------------------
-def test_server_exposes_the_phase0_tools(ctx):
+def test_server_exposes_the_tools(ctx):
     tools = asyncio.run(build_server(ctx).list_tools())
     assert {t.name for t in tools} == {"list_assets", "view", "sample_frames",
                                        "detect", "segment", "ocr", "overlay",
-                                       "submit_report"}
+                                       "cross_check", "coverage", "submit_report"}
     by_name = {t.name: t.description for t in tools}
     # Every tool that takes coordinates must say whose pixels they are.
     for name in ("view", "detect", "segment", "overlay"):
         assert "SOURCE-ASSET pixels" in by_name[name], name
     assert "NOT an independent check" in by_name["segment"]
     # The model has to know the ledger will refuse before it writes its claims.
-    assert "do not share a model" in by_name["submit_report"]
+    assert "cross_check" in by_name["submit_report"]
 
 
 def test_server_returns_an_image_and_the_artifact_id(ctx):
@@ -301,9 +301,9 @@ def test_server_signatures_match_the_registry():
     """MCP needs real signatures, the loop needs the table; they must agree."""
     from visru.tools import registry
 
-    assetless = {"list_assets", "submit_report"}  # name no asset to work on
+    # name no single asset to work on
+    assetless = {"list_assets", "submit_report", "cross_check", "coverage"}
     for spec in registry.SPECS:
-        assert spec.params, spec.name
         if spec.name not in assetless:
             assert spec.params[0].name == "asset_id", spec.name
 

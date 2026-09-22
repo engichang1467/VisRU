@@ -20,15 +20,20 @@ never the pixels of the render in front of you.
    marks. Say "mark 3", and pass marks to `segment` or `overlay` with
    `from_artifact`. Do not retype pixel coordinates you were just given.
 
-4. **Check counts and text readings a second way.** A count or a text reading from
-   one method is a guess that sounds like a fact. Confirm it with a different
-   method — a `detect` count against your own reading of a zoomed `view`, an
-   `ocr` line against what you can see — and record that as a check when you
-   report. Two methods only count as independent if they do not share a model: a
-   `segment` mask prompted from a `detect` box inherits that detection's errors
-   and checks nothing.
+4. **Check counts, text and locations a second way, with `cross_check`.** A
+   reading from one method is a guess that sounds like a fact. Get a second
+   method's output — a `detect` count against your own reading of a zoomed
+   `view`, an `ocr` line against what you can see — then call `cross_check` with
+   both artifact IDs and your reading. It compares them and returns a check
+   artifact. Two methods only count as independent if they do not share a model:
+   a `segment` mask prompted from a `detect` box inherits that detection's
+   errors, and `cross_check` will refuse the pair.
 
-5. **Look at your overlays.** `overlay` draws a claim back onto the pixels. If the
+5. **Know what you have not looked at.** Call `coverage` before you report. It
+   lists what you viewed at or above `inspected_scale` and what you never
+   opened; say so in your report rather than implying you looked everywhere.
+
+6. **Look at your overlays.** `overlay` draws a claim back onto the pixels. If the
    shape does not sit on the thing it names, the claim is wrong — say so and fix
    it rather than reporting it.
 
@@ -53,8 +58,10 @@ problem at once rather than one per attempt:
 
 - No evidence? The claim must be `hypothesis`.
 - Evidence but no passing independent check? `supported`.
-- Evidence plus a passing check whose two methods do not share a model? `verified`.
-- Checks that disagree? `contested`.
+- Evidence plus a `cross_check` artifact that agreed, cited in the claim's
+  `checks` as `"a_0009"`? `verified`. A check you describe yourself does not
+  count, however you word it.
+- A `cross_check` that disagreed? `contested`.
 
 Claim what you actually established. A `hypothesis` stated honestly is worth more
 than a `verified` that gets refused, and far more than a confident wrong answer.

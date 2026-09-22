@@ -4,6 +4,12 @@ The ledger is the only place a status is decided. The model proposes one; the le
 computes what the evidence actually warrants and refuses anything stronger. That
 refusal is the whole mechanism — a status the model can assert at will measures
 nothing, and Phase 2 exists to test whether `verified` predicts correctness.
+
+For the same reason a check the model writes itself — `{"result": "agree"}` — can
+make a claim `contested` but never `verified`. Only a check the harness computed
+counts: `cross_check` compares two methods' outputs, saves the verdict as a
+`check` artifact, and the claim cites that artifact's ID. The ledger reads the
+verdict from the sidecar, not from whatever the model copied into its report.
 """
 
 import json
@@ -61,6 +67,7 @@ class Check:
     result: str
     artifacts: list[str] = field(default_factory=list)
     detail: dict[str, Any] = field(default_factory=dict)
+    harness: bool = False  # computed by cross_check, not asserted by the model
 
     @property
     def families(self) -> set[str]:
@@ -114,6 +121,7 @@ class Ledger:
         self.session = session
         self.artifacts = artifacts
         self.claims: list[Claim] = []
+        self.coverage: dict[str, Any] = {}
 
     @property
     def path(self) -> Path:
@@ -174,12 +182,38 @@ class Ledger:
                             f"{sorted(PASSING | FAILING)}")
         return problems
 
+    def checks(self, claim: Claim) -> list[Check]:
+        """The claim's checks, with cited cross_check artifacts read from disk.
+
+        A check dict carrying `check: a_0009` is replaced wholesale by that
+        artifact's recorded verdict; anything the model wrote beside the ID is
+        ignored, so it cannot upgrade a disagreement by retyping the result.
+        """
+        out = []
+        for raw, parsed in zip(claim.checks, claim.as_checks()):
+            ref = raw.get("check")
+            if ref is None:
+                out.append(parsed)
+                continue
+            try:
+                art = self.artifacts.load(ref)
+            except KeyError:
+                art = None
+            if art is None or art.kind != "check":
+                out.append(Check(kind=f"check {ref}", methods=[], result="missing"))
+                continue
+            p = art.params
+            out.append(Check(kind=f"cross_check:{p['kind']}", methods=list(p["methods"]),
+                             result=p["result"], artifacts=list(p["artifacts"]),
+                             detail={"check": ref, **p.get("detail", {})}, harness=True))
+        return out
+
     def independent_passes(self, claim: Claim) -> list[Check]:
-        return [c for c in claim.as_checks()
-                if c.passed() and not self.check_problems(c)]
+        return [c for c in self.checks(claim)
+                if c.harness and c.passed() and not self.check_problems(c)]
 
     def warranted_status(self, claim: Claim) -> str:
-        checks = claim.as_checks()
+        checks = self.checks(claim)
         if any(c.failed() for c in checks):
             return CONTESTED
         if not claim.evidence:
@@ -207,6 +241,16 @@ class Ledger:
                 found.append(f"{tag}: status {claim.status!r} is not one of {list(STATUSES)}")
                 continue
 
+            for raw in claim.checks:
+                ref = raw.get("check") if isinstance(raw, dict) else None
+                if ref is not None:
+                    try:
+                        kind = self.artifacts.load(ref).kind
+                    except KeyError:
+                        kind = None
+                    if kind != "check":
+                        found.append(f"{tag}: check {ref!r} is not a cross_check artifact")
+
             for artifact_id in claim.evidence:
                 try:
                     self.artifacts.load(artifact_id)
@@ -225,28 +269,50 @@ class Ledger:
                 found.append(f"{tag}: a check disagreed, so this claim is contested, "
                              f"not {claim.status!r}")
             elif claim.status == VERIFIED and warranted != VERIFIED:
+                checks = self.checks(claim)
                 detail = []
-                for check in claim.as_checks():
+                for check in checks:
                     detail.extend(self.check_problems(check))
-                reason = ("; ".join(detail) if detail
-                          else "no check was run against it")
+                if detail:
+                    reason = "; ".join(detail)
+                elif checks:
+                    reason = ("checks you write yourself do not count; run cross_check "
+                              "and cite the artifact it returns as {\"check\": \"a_…\"}")
+                else:
+                    reason = "no check was run against it"
                 found.append(f"{tag}: verified needs a passing independent check — {reason}")
         return found
 
     # --- submission ------------------------------------------------------
-    def submit(self, claims: list[Claim]) -> "Report":
+    def submit(self, claims: list[Claim], coverage: dict[str, Any] | None = None,
+               ) -> "Report":
         problems = self.problems(claims)
         if problems:
             raise RejectedReport("\n".join(f"- {p}" for p in problems))
-        self.claims = [Claim(**{**asdict(c), "session": self.session}) for c in claims]
+        # Cited checks are written out in full, so the saved ledger (and the HTML
+        # report built from it) reads without the artifact store.
+        self.claims = [Claim(**{**asdict(c), "session": self.session,
+                                "checks": [self._expand(raw, chk) for raw, chk
+                                           in zip(c.checks, self.checks(c))]})
+                       for c in claims]
+        self.coverage = coverage or {}
         self.save()
         return Report(self.session, self.claims, self.path)
+
+    @staticmethod
+    def _expand(raw: dict[str, Any], check: Check) -> dict[str, Any]:
+        if not check.harness:
+            return raw
+        return {"check": raw["check"], "kind": check.kind, "methods": check.methods,
+                "result": check.result, "artifacts": check.artifacts,
+                **{k: v for k, v in check.detail.items() if k != "check"}}
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"version": 1, "session": self.session,
                    "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                   "claims": [asdict(c) for c in self.claims]}
+                   "claims": [asdict(c) for c in self.claims],
+                   "coverage": self.coverage}
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=1))
         tmp.replace(self.path)
@@ -257,6 +323,7 @@ class Ledger:
         if led.path.is_file():
             raw = json.loads(led.path.read_text())
             led.claims = [Claim(**c) for c in raw["claims"]]
+            led.coverage = raw.get("coverage", {})
         return led
 
 

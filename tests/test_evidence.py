@@ -14,7 +14,7 @@ from visru.evidence.ledger import Claim, Ledger, RejectedReport
 from visru.geometry import ViewTransform
 from visru.tools import open_workspace
 from visru.tools.navigate import view
-from visru.tools.verify import overlay, submit_report
+from visru.tools.verify import cross_check, overlay, submit_report
 from visru.workspace.artifacts import Mark
 from visru.workspace.registry import Registry
 
@@ -45,6 +45,13 @@ def evidence(ctx):
     return {"view": looked, "detect": found.id, "segment_of_detect": derived.id}
 
 
+@pytest.fixture
+def agreed(ctx, evidence):
+    """A harness-computed check: my box for the square against the detector's."""
+    return cross_check(ctx, "localize", [evidence["view"], evidence["detect"]],
+                       box=list(MARKER_BOX)).artifacts[0]
+
+
 def _claim(**kw):
     base = {"claim_id": "c_1", "text": "The label is torn.", "status": "supported",
             "evidence": [], "checks": []}
@@ -71,13 +78,38 @@ def test_evidence_alone_is_supported_not_verified(ctx, evidence):
                for p in led.problems([claim]))
 
 
-def test_two_models_that_agree_earn_verified(ctx, evidence):
+def test_two_models_that_agree_earn_verified(ctx, evidence, agreed):
+    led = _ledger(ctx)
+    claim = _claim(status="verified", evidence=[evidence["view"], evidence["detect"]],
+                   checks=[{"check": agreed}])
+    assert led.warranted_status(claim) == "verified"
+    assert led.problems([claim]) == []
+
+
+def test_a_check_the_model_wrote_itself_never_earns_verified(ctx, evidence):
+    """Otherwise `verified` measures what the model says about itself."""
     led = _ledger(ctx)
     claim = _claim(status="verified", evidence=[evidence["view"], evidence["detect"]],
                    checks=[{"kind": "cross_tool", "methods": ["detect", "ocr"],
                             "artifacts": [evidence["detect"]], "result": "agree"}])
-    assert led.warranted_status(claim) == "verified"
-    assert led.problems([claim]) == []
+    assert led.warranted_status(claim) == "supported"
+    assert any("run cross_check" in p for p in led.problems([claim]))
+
+
+def test_retyping_a_disagreement_as_agree_does_not_help(ctx, evidence):
+    led = _ledger(ctx)
+    ref = cross_check(ctx, "localize", [evidence["view"], evidence["detect"]],
+                      box=[0, 0, 50, 50]).artifacts[0]
+    claim = _claim(status="verified", evidence=[evidence["view"]],
+                   checks=[{"check": ref, "result": "agree"}])
+    assert led.warranted_status(claim) == "contested"
+
+
+def test_citing_something_that_is_not_a_check_is_refused(ctx, evidence):
+    led = _ledger(ctx)
+    claim = _claim(status="supported", evidence=[evidence["view"]],
+                   checks=[{"check": evidence["view"]}])
+    assert any("not a cross_check artifact" in p for p in led.problems([claim]))
 
 
 def test_one_model_checking_itself_is_not_independent(ctx, evidence):
@@ -122,12 +154,11 @@ def test_a_check_with_a_meaningless_result_does_not_count(ctx, evidence):
     assert any("is not one of" in p for p in led.problems([claim]))
 
 
-def test_conservative_statuses_are_allowed(ctx, evidence):
+def test_conservative_statuses_are_allowed(ctx, evidence, agreed):
     """Claiming less than the evidence supports is not an error."""
     led = _ledger(ctx)
     claim = _claim(status="supported", evidence=[evidence["view"]],
-                   checks=[{"kind": "cross_tool", "methods": ["detect", "ocr"],
-                            "result": "agree"}])
+                   checks=[{"check": agreed}])
     assert led.warranted_status(claim) == "verified"
     assert led.problems([claim]) == []
 
@@ -149,12 +180,11 @@ def test_submit_report_rejects_everything_at_once(ctx, evidence):
     assert not (ctx.root / ".visru/ledger").exists()
 
 
-def test_submit_report_writes_the_ledger_and_groups_by_status(ctx, evidence):
+def test_submit_report_writes_the_ledger_and_groups_by_status(ctx, evidence, agreed):
     res = submit_report(ctx, [
         {"claim_id": "c_1", "text": "Gripper closed early.", "status": "verified",
          "evidence": [evidence["view"], evidence["detect"]],
-         "checks": [{"kind": "cross_tool", "methods": ["detect", "ocr"],
-                     "artifacts": [evidence["detect"]], "result": "agree", "iou": 0.84}]},
+         "checks": [agreed]},
         {"claim_id": "c_2", "text": "Finger occluded the handle.", "status": "supported",
          "evidence": [evidence["view"]]},
         {"claim_id": "c_3", "text": "Probably a calibration drift.",
@@ -167,7 +197,18 @@ def test_submit_report_writes_the_ledger_and_groups_by_status(ctx, evidence):
 
     saved = json.loads((ctx.root / ".visru/ledger/s_test_01.json").read_text())
     assert [c["claim_id"] for c in saved["claims"]] == ["c_1", "c_2", "c_3"]
-    assert saved["claims"][0]["checks"][0]["iou"] == 0.84
+    # The cited check is written out in full, read from its artifact.
+    check = saved["claims"][0]["checks"][0]
+    assert check["check"] == agreed and check["result"] == "agree"
+    assert check["iou"] == 1.0 and check["kind"] == "cross_check:localize"
+    assert "assets" in saved["coverage"]
+
+    from visru.evidence.report import render
+
+    html = render(ctx.root, ctx.session).read_text()
+    assert html.index("Gripper closed early.") < html.index("Probably a calibration")
+    assert f"../artifacts/{agreed}.png" in html and "IoU 1.0" in html
+    assert "Hypotheses: no evidence (1)" in html
     assert all(c["session"] == "s_test_01" for c in saved["claims"])
 
 
@@ -283,15 +324,15 @@ def test_the_same_model_reading_two_images_is_not_a_cross_check(ctx, evidence):
 
 
 def test_prose_methods_still_resolve_to_their_tools(ctx, evidence):
-    """The same session's genuinely independent check must keep working: agents write
-    methods as prose, and view-vs-detector is two models however it is worded."""
+    """Agents write methods as prose, and view-vs-detector is two models however it
+    is worded. (Written by the model, it still only reaches supported.)"""
     led = _ledger(ctx)
-    claim = _claim(status="verified", evidence=[evidence["view"], evidence["detect"]],
+    claim = _claim(status="supported", evidence=[evidence["view"], evidence["detect"]],
                    checks=[{"kind": "visual-vs-detector",
                             "methods": ["view crop a_0008 (pair + 1 on lane markings)",
                                         "detect a_0010 (marks 1,2,3 in roadway)"],
                             "result": "agree"}])
-    assert led.warranted_status(claim) == "verified"
+    assert led.check_problems(claim.as_checks()[0]) == []
     assert led.problems([claim]) == []
 
 
@@ -323,3 +364,75 @@ def test_lineage_is_caught_even_when_ids_are_only_in_the_prose(ctx, evidence):
                                         f"segment {evidence['segment_of_detect']}"],
                             "result": "agree"}])
     assert any("derived from" in p for p in led.problems([claim]))
+
+
+# --- cross_check ---------------------------------------------------------
+def test_cross_check_counts_marks_against_my_reading(ctx, evidence):
+    pair = [evidence["view"], evidence["detect"]]
+    assert "AGREE" in cross_check(ctx, "count", pair, value=1).text
+    assert "DISAGREE" in cross_check(ctx, "count", pair, value="2").text
+
+
+def test_cross_check_reads_text_across_ocr_lines(ctx, evidence):
+    im = ctx.registry.list(kind="image")[0].id
+    tf = ViewTransform(im, 2900.0, 1900.0, 2.0)
+    read = ctx.artifacts.save(Image.new("RGB", (600, 600)), kind="ocr", parent=im,
+                              transform=tf, params={"box": [2900, 1900, 3200, 2200]},
+                              marks=[Mark(id=1, label="TRADER", box=(2900, 1900, 3000, 1950)),
+                                     Mark(id=2, label="JOE'S", box=(2900, 1960, 3000, 2000)),
+                                     Mark(id=3, label="OPEN", box=(2900, 2100, 3000, 2150))])
+    pair = [evidence["view"], read.id]
+    assert "AGREE" in cross_check(ctx, "text", pair, value="Trader Joe's",
+                                  marks=[None, [1, 2]]).text
+    assert "DISAGREE" in cross_check(ctx, "text", pair, value="Trader Joe's").text
+
+
+def test_cross_check_refuses_pairs_that_share_errors(ctx, evidence):
+    with pytest.raises(ValueError, match="derived from"):
+        cross_check(ctx, "count", [evidence["detect"], evidence["segment_of_detect"]])
+    im = ctx.registry.list(kind="image")[0].id
+    again = view(ctx, im, box=[0, 0, 400, 400]).artifacts[0]
+    with pytest.raises(ValueError, match="not independent"):
+        cross_check(ctx, "count", [evidence["view"], again], value=1)
+    assert not [a for a in ctx.artifacts.all() if a.kind == "check"]
+
+
+def test_cross_check_needs_my_reading_for_a_view(ctx, evidence):
+    with pytest.raises(ValueError, match="pass value"):
+        cross_check(ctx, "count", [evidence["view"], evidence["detect"]])
+
+
+def test_a_check_artifact_is_regenerable(ctx, agreed):
+    from visru.agent.trajectory import replay_artifact
+
+    remade = replay_artifact(ctx, agreed)
+    assert remade.tobytes() == ctx.artifacts.load_image(agreed).tobytes()
+
+
+# --- coverage ------------------------------------------------------------
+def test_coverage_counts_only_this_sessions_close_views(ctx, marker_workspace):
+    from visru.tools.verify import coverage_summary
+
+    im = ctx.registry.list(kind="image")[0]
+    view(ctx, im.id)  # whole 4032 px image: seen, but far below scale
+    view(ctx, im.id, box=[0, 0, 1008, 1512])  # an eighth, above native scale
+    other = open_workspace(marker_workspace, session="s_other")
+    view(other, im.id, box=[1008, 0, 4032, 3024])
+
+    cov = coverage_summary(ctx)["assets"][im.id]
+    assert cov["seen"] == 1.0
+    assert 0.12 <= cov["inspected"] <= 0.14
+    vid = ctx.registry.list(kind="video")[0].id
+    assert vid in coverage_summary(ctx)["untouched"]
+
+
+def test_coverage_counts_video_frames(ctx):
+    from visru.tools.navigate import sample_frames
+    from visru.tools.verify import coverage, coverage_summary
+
+    vid = ctx.registry.list(kind="video")[0].id
+    sample_frames(ctx, vid, n=6)
+    view(ctx, f"{vid}#12")
+    c = coverage_summary(ctx)["assets"][vid]
+    assert c["frames_seen"] == 7 and c["frames_inspected"] == 1 and c["frames"] == 90
+    assert "1 of 90 frames" in coverage(ctx).text

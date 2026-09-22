@@ -8,7 +8,7 @@ def test_defaults_need_no_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     cfg = load_config()
     assert cfg.path is None
-    assert cfg.model.name == "claude-opus-5"
+    assert cfg.model.name == "claude-sonnet-5"
     # limits must unpack straight into fit_render_size
     assert fit_render_size(4032, 3024, **cfg.model.limits)[0] <= cfg.model.max_edge
 

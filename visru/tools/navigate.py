@@ -7,8 +7,9 @@ from PIL import Image
 
 from visru.geometry import ViewTransform, fit_render_size
 from visru.tools import ToolContext, ToolResult, resolve_ref, scale_note
-from visru.tools.annotate import caption, draw_grid
+from visru.tools.annotate import caption, draw_grid, draw_marks
 from visru.workspace import video
+from visru.workspace.artifacts import Mark
 
 CAPTION_H = 22
 
@@ -91,17 +92,31 @@ class Sheet:
     scale: float
 
 
+def sheet_boxes(raw: dict | None) -> dict[int, list[Mark]] | None:
+    """Per-frame marks back from an artifact's JSON params, where keys are strings."""
+    if not raw:
+        return None
+    return {int(k): [Mark(**{**m, "box": tuple(m["box"]) if m.get("box") else None})
+                     for m in v] for k, v in raw.items()}
+
+
 def build_sheet(ctx: ToolContext, ref: str, n: int = 12, t0: float | None = None,
-                t1: float | None = None) -> Sheet:
+                t1: float | None = None, times: list[float] | None = None,
+                boxes: dict[int, list[Mark]] | None = None) -> Sheet:
     """Build a contact sheet without saving it.
 
     Split out from the tool so a trajectory replay can remake the exact image the
     model was shown without creating a second artifact as a side effect. Frame
     decoding is deterministic, so the same arguments give the same pixels.
+
+    `times` picks the frames outright (search hits, a track); otherwise n are
+    spread over t0..t1. `boxes` maps a frame index to marks, in source pixels,
+    drawn on that frame's cell.
     """
     meta = ctx.registry.video_meta(ref)
     path = ctx.registry.abspath(ref)
-    times = video.frame_times(meta, n, t0, t1)
+    if times is None:
+        times = video.frame_times(meta, n, t0, t1)
     frames = video.decode_at(path, times, meta)
     if not frames:
         raise ValueError(f"no frames decoded from {ref} over {t0}..{t1}")
@@ -116,6 +131,9 @@ def build_sheet(ctx: ToolContext, ref: str, n: int = 12, t0: float | None = None
     for i, frame in enumerate(frames):
         frame_ref = f"{ctx.registry.get(ref).id}#{frame.index}"
         thumb = frame.image.resize((cell_w, cell_h), Image.Resampling.LANCZOS)
+        if boxes and boxes.get(frame.index):
+            thumb = draw_marks(thumb, boxes[frame.index],
+                               ViewTransform(frame_ref, 0.0, 0.0, cell_w / meta.width))
         cx, cy = (i % cols) * cell_w, (i // cols) * (cell_h + CAPTION_H)
         sheet.paste(caption(thumb, f"{frame_ref}  t={frame.time:.2f}s", CAPTION_H), (cx, cy))
         cells.append({"ref": frame_ref, "index": frame.index, "time": round(frame.time, 3),

@@ -84,6 +84,18 @@ def test_every_tool_call_is_answered_and_logged(ctx):
     assert [r.kind for r in records[:2]] == ["model", "tool"]
 
 
+def test_the_backends_own_turn_is_handed_back_next_request(ctx):
+    """Thinking blocks live in `raw`; dropping it loses the model's reading."""
+    im_id = ctx.registry.list(kind="image")[0].id
+    first = looks(0, im_id)
+    first.raw = ["the original blocks"]
+    backend = Scripted(first)
+    run("look", ctx, backend, max_steps=2)
+
+    assistant = [m for m in backend.seen[1] if m["role"] == "assistant"][0]
+    assert assistant["raw"] is first.raw
+
+
 def test_the_model_is_given_the_tools_and_the_prompt(ctx):
     backend = Scripted()
     run("look", ctx, backend, max_steps=1)

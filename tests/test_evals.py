@@ -206,3 +206,53 @@ def test_importers_parse_the_published_formats():
     assert h["options"] == ["1", "2", "3", "4"] and h["question"] == "How many?"
     for row in (v, h):
         suite.Question(**row)  # the suite accepts what the importer writes
+
+
+# --- temporal (Phase 3) ------------------------------------------------------
+def _t(**kw):
+    return _q(**{"kind": "temporal", "answer": "24.30..30.41", **kw})
+
+
+def test_temporal_is_correct_when_both_ends_are_inside_the_tolerance():
+    assert suite.grade(_t(), "24.0..31.0") is True
+    assert suite.grade(_t(), "from 23.5 s to 30 s") is True
+    assert suite.grade(_t(), "30.41..24.30") is True  # ends in either order
+    assert suite.grade(_t(), "22.0..30.4") is False  # start 2.3 s early
+    assert suite.grade(_t(), "24.3..32.0") is False  # end 1.59 s late
+
+
+def test_temporal_tolerance_is_per_question():
+    assert suite.grade(_t(tolerance=3.0), "22.0..30.4") is True
+    assert suite.grade(_t(tolerance=0.1), "24.0..30.41") is False
+
+
+def test_temporal_answers_that_are_not_one_window_go_to_a_person():
+    assert suite.grade(_t(), "about 25 s") is None
+    assert suite.grade(_t(), "24..30, or maybe 40") is None
+    assert suite.grade(_t(), "24-30") is True  # a dash is a range, not a minus
+
+
+def test_temporal_prompt_asks_for_a_window():
+    assert "start..end" in suite.prompt(_t())
+
+
+def test_charades_rows_become_temporal_questions():
+    from evals import import_bench
+
+    row = {"video": "3MSZA.mp4", "caption": "person turn a light on.",
+           "timestamp": [24.296875, 30.40625]}
+    q = import_bench.parse_charades(row, duration=29.0)
+    assert q["id"] == "charades_3MSZA" and q["kind"] == "temporal"
+    assert q["answer"] == "24.30..29.00"  # clipped to the file's length
+    assert q["tolerance"] == 1.0 and '"person turn a light on"' in q["question"]
+    suite.Question(**q)  # loads under the suite schema
+
+
+def test_charades_sampling_is_one_query_per_video_and_seeded():
+    from evals import import_bench
+
+    rows = [{"video": f"V{i % 7}.mp4", "caption": f"c{i}", "timestamp": [0, 1]}
+            for i in range(40)]
+    a = import_bench.pick_charades(rows, 5, seed=3)
+    assert len({r["video"] for r in a}) == 5
+    assert a == import_bench.pick_charades(rows, 5, seed=3)

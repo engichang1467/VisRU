@@ -15,7 +15,8 @@ exactly this.
 
 Caching. The render order is tools, then system, then messages, so the stable
 half of every request is the tool schemas and the system prompt. Marking the
-system prompt cacheable makes that prefix reusable — which is also why elision
+system prompt cacheable makes that prefix reusable, and a second breakpoint on
+the last message extends it over the history so far — which is also why elision
 works in batches rather than per turn: rewriting history every turn would throw
 the prefix away each time.
 """
@@ -68,6 +69,20 @@ def to_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _cache_tail(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Mark the end of the history cacheable, so next turn reads it back.
+
+    The system breakpoint alone caches only tools and system; without this every
+    turn re-bills the whole history at full input price. The tail is always a
+    user message the context just built, so its blocks are plain dicts.
+    """
+    if messages and messages[-1]["role"] == "user" and messages[-1]["content"]:
+        content = list(messages[-1]["content"])
+        content[-1] = {**content[-1], "cache_control": CACHE}
+        messages[-1] = {**messages[-1], "content": content}
+    return messages
+
+
 class AnthropicBackend:
     name = "anthropic"
 
@@ -82,7 +97,7 @@ class AnthropicBackend:
             max_tokens=self.cfg.model.max_tokens,
             system=[{"type": "text", "text": system, "cache_control": CACHE}],
             tools=tools,
-            messages=to_messages(messages),
+            messages=_cache_tail(to_messages(messages)),
         ) as stream:
             message = stream.get_final_message()
         return _response(message)

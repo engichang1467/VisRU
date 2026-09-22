@@ -35,7 +35,9 @@ FAILING = {"disagree", "fail", "inconsistent"}
 # which is why lineage is checked as well as family.
 MODEL_FAMILY = {
     "view": "vlm", "vlm": "vlm", "read": "vlm", "count": "vlm", "inspect": "vlm",
-    "detect": "owlv2", "segment": "sam2", "ocr": "paddleocr",
+    "contact_sheet": "vlm",  # the model reading thumbnails is still the model
+    "detect": "owlv2", "segment": "sam2", "track": "sam2", "ocr": "paddleocr",
+    "search": "siglip",
     "depth": "depth_anything", "pointmap": "vggt",
     "python": "code", "measure": "code", "geometry": "code",
 }

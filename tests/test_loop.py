@@ -81,7 +81,19 @@ def test_every_tool_call_is_answered_and_logged(ctx):
     tools = [r for r in records if r.kind == "tool"]
     assert len(tools) == 2
     assert all(r.shown and r.artifacts for r in tools)
-    assert [r.kind for r in records[:2]] == ["model", "tool"]
+    assert [r.kind for r in records[:3]] == ["session", "model", "tool"]
+
+
+def test_the_log_opens_with_a_header_that_names_the_model(ctx):
+    """A trajectory nobody can attribute is not training data."""
+    im_id = ctx.registry.list(kind="image")[0].id
+    out = run("look", ctx, Scripted(looks(0, im_id)), max_steps=2)
+    header = read_log(out.trajectory)[0]
+    assert header.kind == "session"
+    assert header.meta["model"] == ctx.cfg.model.name
+    assert header.meta["backend"] == ctx.cfg.model.backend
+    assert header.meta["task"] == "look"
+    assert "view" in header.meta["tools"]
 
 
 def test_the_backends_own_turn_is_handed_back_next_request(ctx):

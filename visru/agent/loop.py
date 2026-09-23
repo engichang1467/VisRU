@@ -72,6 +72,7 @@ def run(task: str, ctx: ToolContext, backend: Backend, max_steps: int = 200,
     ctx.backend, ctx.child_usage = backend, {}  # for `delegate`
     log = Trajectory(ctx.root, ctx.session)
     schemas = registry.schemas(tools)
+    log.session_header(ctx.cfg, task, system, [s["name"] for s in schemas])
 
     usage: dict[str, int] = {}
     peak, step, nudged = 0, -1, False

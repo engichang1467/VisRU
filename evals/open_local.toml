@@ -1,0 +1,31 @@
+# The open arm, served locally by vLLM. Pass it with `--config`:
+#
+#   vllm serve Qwen/Qwen3-VL-2B-Instruct --port 8000 \
+#       --dtype bfloat16 --max-model-len 16384 --gpu-memory-utilization 0.80 \
+#       --limit-mm-per-prompt '{"image": 8}' \
+#       --enable-auto-tool-choice --tool-call-parser hermes
+#
+#   python -m evals.agent --workspace bench/vstar \
+#       --questions bench/vstar/questions.jsonl --arm full \
+#       --config evals/open_local.toml
+#
+# Two of those serve flags are load-bearing. Without --limit-mm-per-prompt vLLM
+# accepts one image per request and rejects everything this harness sends after
+# the first render. Without the tool-call parser the model's calls come back as
+# prose in `content` and every turn looks like the model refusing to use tools.
+[model]
+backend = "openai_compatible"
+name = "Qwen/Qwen3-VL-2B-Instruct"
+base_url = "http://localhost:8000/v1"
+
+# Not Claude's numbers. Qwen3-VL sees 16px patches merged 2x2, so a 28px grid
+# under-counts its visual tokens by about 3x — the backend's drift check says so
+# out loud if this is wrong. The rest is 12 GB of VRAM talking: renders stay
+# small, and few enough stay live that the KV cache fits beside the weights.
+max_edge = 1024
+max_visual_tokens = 1600
+patch = 16
+max_tokens = 4000
+
+[context]
+max_live_images = 6

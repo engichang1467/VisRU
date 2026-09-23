@@ -10,6 +10,11 @@ from typing import Any
 class ModelConfig:
     backend: str = "anthropic"  # or "openai_compatible"
     name: str = "claude-sonnet-5"
+    # openai_compatible only. The HF router by default; point it at a local vLLM
+    # to run the same model on your own GPU. Pin the provider in `name`
+    # ("Qwen/Qwen3-VL-30B-A3B-Instruct:novita"): tool support differs between
+    # providers serving the same weights.
+    base_url: str = "https://router.huggingface.co/v1"
     # 2000 not 2576: once a request holds more than 20 images every image must be
     # <=2000 px per side, and any real session crosses that.
     max_edge: int = 2000

@@ -81,6 +81,7 @@ problem at once rather than one per attempt:
   `checks` as `"a_0009"`? `verified`. A check you describe yourself does not
   count, however you word it.
 - A `cross_check` that disagreed? `contested`.
+- A DISAGREE is a reportable result, not to retry
 
 Claim what you actually established. A `hypothesis` stated honestly is worth more
 than a `verified` that gets refused, and far more than a confident wrong answer.

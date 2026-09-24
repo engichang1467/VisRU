@@ -9,6 +9,8 @@ the model stops asking for tools, or it runs out of steps. All three are results
 only the first is an answer.
 """
 
+import json
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,26 @@ PROMPT_PATH = Path(__file__).parent / "prompts" / "system.md"
 NUDGE = ("Finish by calling submit_report with a claim for each thing you are "
          "asserting, each with the artifact IDs that show it.")
 
+# Said instead when the turn died at max_tokens. A truncated turn carries no call,
+# so the nudge above would answer a question the model never finished asking, and
+# the next turn spends another full output budget on more of the same.
+TRUNCATED = ("Your last turn was cut off at the output limit before it called "
+            "anything. Call one tool now, with no preamble.")
+
+# The same call, with the same arguments, this many times in a run: the model is
+# not reading the answers. Counted over the whole run rather than consecutively,
+# because a stuck model cycles rather than repeats — view, ocr, view, ocr, each
+# pair identical to the last — and any "same as the previous turn" test sees two
+# alternating signatures and never fires. Re-viewing an elided artifact is normal,
+# so the limit leaves room for a few honest repeats.
+REPEAT_LIMIT = 4
+
+# Turns that died at max_tokens without calling anything, over the whole run — not
+# in a row. An open model that starts repeating itself alternates: one degenerate
+# turn, one small real call, one degenerate turn. Every consecutive counter resets
+# on the call in between, so this one deliberately never resets.
+TRUNCATION_LIMIT = 3
+
 
 def system_prompt() -> str:
     return PROMPT_PATH.read_text()
@@ -38,7 +60,7 @@ class Session:
 
     session: str
     steps: int
-    reason: str  # reported | stopped | exhausted
+    reason: str  # reported | stopped | stuck | exhausted
     report: str = ""
     trajectory: Path | None = None
     elisions: int = 0
@@ -76,6 +98,8 @@ def run(task: str, ctx: ToolContext, backend: Backend, max_steps: int = 200,
 
     usage: dict[str, int] = {}
     peak, step, nudged = 0, -1, False
+    seen: Counter[tuple] = Counter()
+    truncations = 0
     reason, report = "exhausted", ""
 
     for step in range(max_steps):
@@ -85,6 +109,13 @@ def run(task: str, ctx: ToolContext, backend: Backend, max_steps: int = 200,
         context.add_turn(response.text, response.calls, raw=response.raw)
 
         if not response.calls:
+            if response.stop_reason == "length":
+                truncations += 1
+                if truncations >= TRUNCATION_LIMIT:
+                    reason = "stuck"
+                    break
+                context.add_user(TRUNCATED)
+                continue
             # Ask once for a report. If it still calls nothing, it has finished
             # thinking, and spending the rest of the budget to prove that is waste.
             if nudged:
@@ -94,6 +125,13 @@ def run(task: str, ctx: ToolContext, backend: Backend, max_steps: int = 200,
             context.add_user(NUDGE)
             continue
         nudged = False
+
+        sig = tuple((c.name, json.dumps(c.arguments, sort_keys=True))
+                   for c in response.calls)
+        seen[sig] += 1
+        if seen[sig] >= REPEAT_LIMIT:
+            reason = "stuck"
+            break
 
         for call in response.calls:
             result, error = _execute(ctx, call, tools)

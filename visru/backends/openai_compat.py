@@ -96,23 +96,23 @@ def _assistant(blocks: list[dict[str, Any]]) -> dict[str, Any]:
     return message
 
 
-def _tool_result(block: dict[str, Any]) -> list[dict[str, Any]]:
-    """One tool_result to a tool message, plus a user message for its images.
+def _tool_result(block: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """One tool_result to a tool message, plus the image parts that ride behind it.
 
-    A `role="tool"` message is text only, so images ride behind it. The error
-    flag goes into the text: without it the model reads a failed call as having
-    worked, and OpenAI has no `is_error` field to carry it.
+    A `role="tool"` message is text only, so images go in a user message after
+    it. The error flag goes into the text: without it the model reads a failed
+    call as having worked, and OpenAI has no `is_error` field to carry it.
     """
     inner = block.get("content") or []
     text = "\n".join(b["text"] for b in inner if b.get("type") == "text")
     if block.get("is_error"):
         text = f"ERROR: {text}" if text else "ERROR"
-    out = [{"role": "tool", "tool_call_id": block["tool_use_id"],
-            "content": text or "(no output)"}]
+    message = {"role": "tool", "tool_call_id": block["tool_use_id"],
+               "content": text or "(no output)"}
     images = _parts([b for b in inner if b.get("type") == "image"])
-    if images:
-        out.append({"role": "user", "content": images})
-    return out
+    if images:  # parallel calls share one user message; say whose images these are
+        images.insert(0, {"type": "text", "text": f"images from {block['tool_use_id']}:"})
+    return message, images
 
 
 def to_messages(system: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -123,10 +123,15 @@ def to_messages(system: str, messages: list[dict[str, Any]]) -> list[dict[str, A
             raw = message.get("raw")
             out.append(raw if isinstance(raw, dict) else _assistant(content))
             continue
-        results = [b for b in content if b.get("type") == "tool_result"]
-        for block in results:
-            out.extend(_tool_result(block))
-        rest = _parts([b for b in content if b.get("type") != "tool_result"])
+        # Every tool message must directly follow the assistant turn that called
+        # it, so all of them go first and the images collect into one user message.
+        images: list[dict[str, Any]] = []
+        for block in content:
+            if block.get("type") == "tool_result":
+                tool_message, parts = _tool_result(block)
+                out.append(tool_message)
+                images.extend(parts)
+        rest = images + _parts([b for b in content if b.get("type") != "tool_result"])
         if rest:
             out.append({"role": "user", "content": rest})
     return out
@@ -170,18 +175,49 @@ class OpenAICompatBackend:
             from openai import OpenAI
 
             self.client = OpenAI(base_url=cfg.model.base_url, api_key=_token())
+        # Sampling knobs tuned for vLLM/Qwen. OpenAI's reasoning models refuse some
+        # of them, so complete() prunes whatever the endpoint rejects, once.
+        self.params: dict[str, Any] = {
+            "max_tokens": cfg.model.max_tokens,
+            "temperature": cfg.model.temperature,
+            "top_p": cfg.model.top_p,
+            "presence_penalty": cfg.model.presence_penalty,
+        }
 
     def complete(self, system: str, messages: list[dict[str, Any]],
                  tools: list[dict[str, Any]]) -> Response:
+        from openai import BadRequestError
+
         wire = to_messages(system, messages)
-        completion = self.client.chat.completions.create(
-            model=self.cfg.model.name,
-            max_tokens=self.cfg.model.max_tokens,
-            tools=to_tools(tools) or None,
-            messages=wire,
-        )
+        while True:
+            try:
+                completion = self.client.chat.completions.create(
+                    model=self.cfg.model.name,
+                    tools=to_tools(tools) or None,
+                    messages=wire,
+                    **self.params,
+                )
+                break
+            except BadRequestError as e:
+                if not self._adapt(e):
+                    raise
         self._check_visual_tokens(messages, completion)
         return _response(completion)
+
+    def _adapt(self, error: Any) -> bool:
+        """Drop or rename the param the endpoint refused; False if nothing to fix."""
+        param = getattr(error, "param", None)
+        if getattr(error, "code", None) not in ("unsupported_parameter",
+                                                  "unsupported_value"):
+            return False
+        if param not in self.params:
+            return False
+        value = self.params.pop(param)
+        if param == "max_tokens":
+            self.params["max_completion_tokens"] = value
+        log.warning("endpoint refused %r; %s it for this session", param,
+                    "renamed" if param == "max_tokens" else "dropped")
+        return True
 
     def _check_visual_tokens(self, messages: list[dict[str, Any]],
                              completion: Any) -> None:

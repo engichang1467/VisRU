@@ -42,8 +42,20 @@ def test_tool_result_becomes_its_own_message_with_images_behind_it():
     # Text only: an image left in here never reaches the model.
     assert isinstance(tool["content"], str)
 
-    assert wire[4]["content"][0]["type"] == "image_url"
-    assert wire[4]["content"][0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert wire[4]["content"][0] == {"type": "text", "text": "images from t0:"}
+    assert wire[4]["content"][1]["type"] == "image_url"
+    assert wire[4]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+def test_parallel_calls_keep_tool_messages_together():
+    """OpenAI 400s if a user message lands between the tool messages of one turn."""
+    ctx = Context("read the sign", Config())
+    calls = [ToolCall(id=f"t{i}", name="view", arguments={}) for i in range(2)]
+    ctx.add_turn("", calls)
+    for call in calls:
+        ctx.add_output(call, ToolResult(text="ok", images=[Image.new("RGB", (8, 8))]))
+    roles = [m["role"] for m in to_messages("sys", ctx.render())]
+    assert roles == ["system", "user", "assistant", "tool", "tool", "user"]
 
 
 def test_failed_call_says_so_in_the_text():
@@ -74,6 +86,68 @@ def test_malformed_arguments_arrive_as_a_call_not_a_crash():
     response = _response(completion)
     assert response.calls[0].name == "view"
     assert response.calls[0].arguments == {"_malformed": "{not json"}
+
+
+def test_sampling_params_reach_the_server():
+    """Left off the request, vLLM samples at its own defaults and the model loops
+    on one sentence until max_tokens. The penalty is what breaks that."""
+    sent = {}
+
+    class Client:
+        class chat:  # noqa: N801
+            class completions:  # noqa: N801
+                @staticmethod
+                def create(**kwargs):
+                    sent.update(kwargs)
+                    return SimpleNamespace(
+                        choices=[SimpleNamespace(finish_reason="stop", message=(
+                            SimpleNamespace(content="ok", tool_calls=[])))],
+                        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1))
+
+    cfg = Config(model=ModelConfig(backend="openai_compatible", max_tokens=1500,
+                                    temperature=0.3, top_p=0.7, presence_penalty=1.5))
+    OpenAICompatBackend(cfg, client=Client()).complete("sys", [], [])
+
+    assert (sent["max_tokens"], sent["temperature"], sent["top_p"],
+            sent["presence_penalty"]) == (1500, 0.3, 0.7, 1.5)
+
+
+def test_refused_params_are_renamed_or_dropped_and_stay_that_way():
+    """OpenAI's reasoning models 400 on max_tokens and on the Qwen sampling knobs."""
+    import httpx
+    from openai import BadRequestError
+
+    calls = []
+
+    def refuse(param, code):
+        return BadRequestError(
+            "no", response=httpx.Response(400, request=httpx.Request("POST", "http://x")),
+            body={"param": param, "code": code})
+
+    class Client:
+        class chat:  # noqa: N801
+            class completions:  # noqa: N801
+                @staticmethod
+                def create(**kwargs):
+                    calls.append(kwargs)
+                    if "max_tokens" in kwargs:
+                        raise refuse("max_tokens", "unsupported_parameter")
+                    if "temperature" in kwargs:
+                        raise refuse("temperature", "unsupported_value")
+                    return SimpleNamespace(
+                        choices=[SimpleNamespace(finish_reason="stop", message=(
+                            SimpleNamespace(content="ok", tool_calls=[])))],
+                        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1))
+
+    cfg = Config(model=ModelConfig(backend="openai_compatible", max_tokens=1500))
+    backend = OpenAICompatBackend(cfg, client=Client())
+    backend.complete("sys", [], [])
+    assert len(calls) == 3
+    assert calls[-1]["max_completion_tokens"] == 1500
+    assert "max_tokens" not in calls[-1] and "temperature" not in calls[-1]
+
+    backend.complete("sys", [], [])
+    assert len(calls) == 4  # learned once, no retries on later turns
 
 
 def test_visual_token_drift_warns_once(caplog):

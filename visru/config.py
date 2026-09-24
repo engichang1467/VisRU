@@ -24,6 +24,13 @@ class ModelConfig:
     # Room to think and still emit a few tool calls. Lowballing this truncates a
     # turn mid-thought and costs a whole retry.
     max_tokens: int = 16_000
+    # openai_compatible only. Left unset, vLLM samples at its own defaults and an
+    # open model in a long image context degenerates into repeating one sentence
+    # until it hits max_tokens. These are Qwen's own recommended values; the
+    # penalty is what actually stops the loop.
+    temperature: float = 0.7
+    top_p: float = 0.8
+    presence_penalty: float = 1.0
 
     @property
     def limits(self) -> dict[str, Any]:

@@ -40,6 +40,23 @@ def _clamp_box(box: list[int] | None, w: int, h: int) -> tuple[int, int, int, in
     return cx0, cy0, cx1, cy1
 
 
+def _pad_to_min_edge(img: Image.Image, patch: int) -> Image.Image:
+    """Letterbox a sliver so the vision tower will accept it.
+
+    A Qwen-family processor rejects an image with a side under one merged patch
+    (2x2 patches) outright — a 4x1024 strip comes back as a 400, which kills the
+    run. A thin crop is a legitimate ask (a sign, a sliver of a shelf), so pad it
+    rather than refuse it. Padding goes bottom-right, outside the content, so
+    every content pixel keeps the same view transform.
+    """
+    floor = 2 * patch
+    if min(img.size) >= floor:
+        return img
+    out = Image.new("RGB", (max(img.width, floor), max(img.height, floor)), (0, 0, 0))
+    out.paste(img, (0, 0))
+    return out
+
+
 def render_region(ctx: ToolContext, ref: str, box: list[int] | None = None,
                   ) -> tuple[Image.Image, ViewTransform, tuple[int, int, int, int]]:
     """Crop and render one region at model resolution. Every tool that shows or
@@ -55,7 +72,8 @@ def render_region(ctx: ToolContext, ref: str, box: list[int] | None = None,
                                 src.width, src.height)
     crop = src.crop((x0, y0, x1, y1))
     rw, rh, scale = fit_render_size(crop.width, crop.height, **ctx.cfg.model.limits)
-    out = crop.resize((rw, rh), Image.Resampling.LANCZOS)
+    out = _pad_to_min_edge(crop.resize((rw, rh), Image.Resampling.LANCZOS),
+                          ctx.cfg.model.patch)
     return out, ViewTransform(ref, float(x0), float(y0), scale), (x0, y0, x1, y1)
 
 

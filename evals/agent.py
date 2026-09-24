@@ -29,6 +29,7 @@ from evals import suite
 from visru import backends
 from visru.agent import loop
 from visru.agent.trajectory import read as read_log, shown_artifacts
+from visru.config import load_config
 from visru.evidence.ledger import LEDGER_DIR
 from visru.geometry import visual_tokens
 from visru.tools import open_workspace
@@ -62,10 +63,16 @@ def answer_claim(root: Path, session: str) -> dict | None:
 
 
 def run_one(workspace: str, q: suite.Question, arm: str, run_id: str, model: str | None,
-            max_steps: int, script: str | None = None) -> dict:
+            max_steps: int, script: str | None = None,
+            backend: str | None = None, config: str | None = None) -> dict:
     session = f"{run_id}_{q.id}"
-    ctx = open_workspace(workspace, session=session)
+    # An arm's config is not the workspace's: the open path wants its own render
+    # limits, and both arms share one indexed workspace.
+    ctx = open_workspace(workspace, cfg=load_config(config) if config else None,
+                         session=session)
     overrides = {"name": model} if model else {}
+    if backend:
+        overrides["backend"] = backend
     if script:
         overrides["backend"] = "replay"
     ctx.cfg = replace(ctx.cfg, model=replace(ctx.cfg.model, **overrides))
@@ -89,7 +96,8 @@ def run_one(workspace: str, q: suite.Question, arm: str, run_id: str, model: str
         im = ctx.artifacts.load_image(artifact_id)
         tokens += visual_tokens(im.width, im.height, patch)
     claim = answer_claim(ctx.root, session)
-    return {"id": q.id, "arm": arm, "model": ctx.cfg.model.name, "session": session,
+    return {"id": q.id, "arm": arm, "model": ctx.cfg.model.name,
+            "backend": ctx.cfg.model.backend, "session": session,
             "answer": claim["text"] if claim else None,
             "status": claim["status"] if claim else None,
             "reason": result.reason, "steps": result.steps,
@@ -100,7 +108,8 @@ def run_one(workspace: str, q: suite.Question, arm: str, run_id: str, model: str
 
 def run(workspace: str, questions_path: str, arm: str, out: str | None = None,
         model: str | None = None, sample: int | None = None, seed: int = 0,
-        max_steps: int = 30, script: str | None = None) -> Path:
+        max_steps: int = 30, script: str | None = None,
+        backend: str | None = None, config: str | None = None) -> Path:
     if arm not in ARMS:
         raise ValueError(f"arm must be one of {list(ARMS)}; single_pass is evals.baseline")
     questions = suite.select(suite.load(questions_path), sample, seed)
@@ -117,7 +126,8 @@ def run(workspace: str, questions_path: str, arm: str, out: str | None = None,
     for i, q in enumerate(questions, start=1):
         if q.id in done:
             continue
-        row = run_one(workspace, q, arm, run_id, model, max_steps, script)
+        row = run_one(workspace, q, arm, run_id, model, max_steps, script, backend,
+                      config)
         with out_path.open("a") as sink:
             sink.write(json.dumps(row) + "\n")
         print(f"[{i}/{len(questions)}] {q.id} {row['reason']} steps={row['steps']} "
@@ -132,6 +142,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--arm", required=True, choices=list(ARMS))
     parser.add_argument("--out", default=None, help="run file; an existing one resumes")
     parser.add_argument("--model", default=None, help="defaults to visru.toml")
+    parser.add_argument("--backend", default=None,
+                        help="anthropic | openai_compatible; defaults to visru.toml. "
+                             "Pin the provider in --model for the open path, e.g. "
+                             "Qwen/Qwen3-VL-30B-A3B-Instruct:novita")
+    parser.add_argument("--config", default=None,
+                        help="visru.toml for this arm; defaults to the workspace's")
     parser.add_argument("--sample", type=int, default=None,
                         help="fixed-seed subset of labelled questions")
     parser.add_argument("--seed", type=int, default=0)
@@ -141,7 +157,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     out = run(args.workspace, args.questions, args.arm, args.out, args.model,
-              args.sample, args.seed, args.max_steps, args.script)
+              args.sample, args.seed, args.max_steps, args.script, args.backend,
+              args.config)
     print(f"\nwrote {out}")
     return 0
 

@@ -50,10 +50,14 @@ def load(cfg, **kwargs) -> Backend:
         from visru.backends.anthropic import AnthropicBackend
 
         return AnthropicBackend(cfg, **kwargs)
+    if name == "openai_compatible":
+        from visru.backends.openai_compat import OpenAICompatBackend
+
+        return OpenAICompatBackend(cfg, **kwargs)
     if name == "replay":
         from visru.backends.replay import ReplayBackend
 
         return ReplayBackend(cfg, **kwargs)
     raise ValueError(
-        f"unknown backend {name!r}; visru ships 'anthropic' and 'replay' "
-        "('openai_compatible' arrives with the open-model work in Phase 5)")
+        f"unknown backend {name!r}; visru ships 'anthropic', 'openai_compatible' "
+        "and 'replay'")

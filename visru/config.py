@@ -10,6 +10,11 @@ from typing import Any
 class ModelConfig:
     backend: str = "anthropic"  # or "openai_compatible"
     name: str = "claude-sonnet-5"
+    # openai_compatible only. The HF router by default; point it at a local vLLM
+    # to run the same model on your own GPU. Pin the provider in `name`
+    # ("Qwen/Qwen3-VL-30B-A3B-Instruct:novita"): tool support differs between
+    # providers serving the same weights.
+    base_url: str = "https://router.huggingface.co/v1"
     # 2000 not 2576: once a request holds more than 20 images every image must be
     # <=2000 px per side, and any real session crosses that.
     max_edge: int = 2000
@@ -19,6 +24,13 @@ class ModelConfig:
     # Room to think and still emit a few tool calls. Lowballing this truncates a
     # turn mid-thought and costs a whole retry.
     max_tokens: int = 16_000
+    # openai_compatible only. Left unset, vLLM samples at its own defaults and an
+    # open model in a long image context degenerates into repeating one sentence
+    # until it hits max_tokens. These are Qwen's own recommended values; the
+    # penalty is what actually stops the loop.
+    temperature: float = 0.7
+    top_p: float = 0.8
+    presence_penalty: float = 1.0
 
     @property
     def limits(self) -> dict[str, Any]:

@@ -34,10 +34,16 @@ class Record:
     """One line of the log.
 
     `kind` is "model" for a turn the model produced, "tool" for a call the harness
-    ran on its behalf. `shown` marks a tool result that carried images into the
-    context — the exit criterion is about images the model actually saw, not every
-    artifact a session happened to create, and `submit_report` cites plenty of the
-    latter.
+    ran on its behalf, and "session" for the header the writer opens with. `shown`
+    marks a tool result that carried images into the context — the exit criterion
+    is about images the model actually saw, not every artifact a session happened
+    to create, and `submit_report` cites plenty of the latter.
+
+    `meta` carries the header's fields. A trajectory has to say for itself which
+    model, backend and provider produced it, what it was asked, and what it was
+    allowed to call: config files mutate and log lines do not, and none of it can
+    be reconstructed afterwards. Training on these is the point (design decision
+    6), and a sample nobody can attribute is not training data.
     """
 
     step: int
@@ -50,6 +56,7 @@ class Record:
     shown: bool = False
     usage: dict[str, int] = field(default_factory=dict)
     error: str | None = None
+    meta: dict[str, Any] = field(default_factory=dict)
 
 
 class Trajectory:
@@ -68,6 +75,20 @@ class Trajectory:
         with self.path.open("a") as sink:
             sink.write(json.dumps(asdict(stamped)) + "\n")
         return stamped
+
+    def session_header(self, cfg, task: str, system: str, tools: list[str]) -> Record:
+        """Write first. Everything a trajectory needs to describe itself."""
+        model, provider = cfg.model.name, None
+        if cfg.model.backend == "openai_compatible" and ":" in model:
+            model, provider = model.split(":", 1)
+        return self.log(Record(
+            step=-1, kind="session",
+            meta={"session": self.session, "backend": cfg.model.backend,
+                  "model": model, "provider": provider,
+                  "base_url": getattr(cfg.model, "base_url", None)
+                  if cfg.model.backend == "openai_compatible" else None,
+                  "task": task, "system": system, "tools": sorted(tools),
+                  "limits": cfg.model.limits}))
 
     def model_turn(self, step: int, text: str, usage: dict[str, int] | None = None,
                    ) -> Record:

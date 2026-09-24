@@ -94,6 +94,20 @@ def test_view_clamps_and_rejects_bad_boxes(ctx):
         view(ctx, im_id, box=[1, 2, 3])
 
 
+
+def test_view_of_a_sliver_is_padded_to_a_size_the_vision_tower_accepts(ctx):
+    """A 2px-wide strip rendered as 4x1024 is a 400 from a Qwen processor, and the
+    coordinate mapping must survive the padding."""
+    im_id, _ = _ids(ctx)
+    res = view(ctx, im_id, box=[2999, 1800, 3001, 2200])
+    img = res.images[0]
+    assert min(img.size) >= 2 * ctx.cfg.model.patch
+    assert max(img.size) / min(img.size) < 200
+
+    tf = ctx.artifacts.load(res.artifacts[0]).view_transform
+    assert tf.to_source(0, 0) == pytest.approx((2999, 1800))
+
+
 def test_view_records_provenance(ctx):
     im_id, _ = _ids(ctx)
     res = view(ctx, im_id, box=[2800, 1800, 3200, 2200], grid=True)

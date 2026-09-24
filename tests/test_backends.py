@@ -223,6 +223,11 @@ def test_sweep_makes_one_view_per_asset():
 
 # --- selection -----------------------------------------------------------
 def test_an_unknown_backend_names_the_ones_that_exist():
-    cfg = Config(model=ModelConfig(backend="openai_compatible"))
-    with pytest.raises(ValueError, match="Phase 5"):
+    cfg = Config(model=ModelConfig(backend="llama.cpp"))
+    with pytest.raises(ValueError, match="openai_compatible"):
         load(cfg)
+
+
+def test_the_open_backend_loads():
+    cfg = Config(model=ModelConfig(backend="openai_compatible"))
+    assert load(cfg).name == "openai_compatible"

@@ -81,7 +81,19 @@ def test_every_tool_call_is_answered_and_logged(ctx):
     tools = [r for r in records if r.kind == "tool"]
     assert len(tools) == 2
     assert all(r.shown and r.artifacts for r in tools)
-    assert [r.kind for r in records[:2]] == ["model", "tool"]
+    assert [r.kind for r in records[:3]] == ["session", "model", "tool"]
+
+
+def test_the_log_opens_with_a_header_that_names_the_model(ctx):
+    """A trajectory nobody can attribute is not training data."""
+    im_id = ctx.registry.list(kind="image")[0].id
+    out = run("look", ctx, Scripted(looks(0, im_id)), max_steps=2)
+    header = read_log(out.trajectory)[0]
+    assert header.kind == "session"
+    assert header.meta["model"] == ctx.cfg.model.name
+    assert header.meta["backend"] == ctx.cfg.model.backend
+    assert header.meta["task"] == "look"
+    assert "view" in header.meta["tools"]
 
 
 def test_the_backends_own_turn_is_handed_back_next_request(ctx):
@@ -144,11 +156,69 @@ def test_a_model_that_stops_calling_tools_is_nudged_once_then_believed(ctx):
 
 def test_running_out_of_steps_is_recorded_as_such(ctx):
     im_id = ctx.registry.list(kind="image")[0].id
-    backend = Scripted(*[looks(i, im_id) for i in range(5)])
+    # Distinct boxes: a model repeating one call verbatim is "stuck", not "exhausted".
+    backend = Scripted(*[looks(i, im_id, box=[0, 0, 100 + i, 100 + i]) for i in range(5)])
     out = run("look", ctx, backend, max_steps=3)
 
     assert out.reason == "exhausted" and out.steps == 3
     assert not out.reported
+
+
+def test_a_model_that_reissues_one_call_is_cut_off(ctx):
+    """The real failure mode: submit_report is rejected, the model reruns the same
+    failing check, says nothing callable, gets nudged, reruns it — to max_steps."""
+    im_id = ctx.registry.list(kind="image")[0].id
+    same = lambda: looks(0, im_id, box=[0, 0, 100, 100])  # noqa: E731
+    backend = Scripted(same(), Response(text="thinking"), same(),
+                        Response(text="thinking"), same(), *[same() for _ in range(20)])
+    out = run("look", ctx, backend, max_steps=50)
+
+    assert out.reason == "stuck"
+    assert out.steps < 10, "the ping-pong ran on"
+
+
+def test_a_model_cycling_between_two_calls_is_cut_off(ctx):
+    """Observed with a 30B: view and ocr on one box, alternating, to the step limit.
+    Neither turn repeats the turn before it, so consecutive-repeat counting is blind
+    to it."""
+    im_id = ctx.registry.list(kind="image")[0].id
+    box = [0, 0, 100, 100]
+    cycle = [Response(text="zoom", calls=[call(0, "view", asset_id=im_id, box=box)],
+                        usage={"input": 100, "output": 20}),
+            Response(text="read", calls=[call(1, "ocr", asset_id=im_id, box=box)],
+                        usage={"input": 100, "output": 20})]
+    backend = Scripted(*(cycle * 12))
+    out = run("look", ctx, backend, max_steps=50)
+
+
+    assert out.reason == "stuck"
+    assert out.steps < 12, "the cycle ran on"
+
+
+def test_a_truncated_turn_is_told_so_rather_than_nudged_for_a_report(ctx):
+    ramble = Response(text="a long ramble that never ends", stop_reason="length")
+    backend = Scripted(ramble, ramble)
+    out = run("look", ctx, backend, max_steps=2)
+
+    said = [b["text"] for m in backend.seen[-1] if m["role"] == "user"
+            for b in m["content"] if b.get("type") == "text"]
+    # Told what happened, and never asked for a report it was cut off before writing.
+    assert any("cut off" in s for s in said) and not any("submit_report" in s for s in said)
+    assert out.reason == "exhausted"
+
+
+def test_turns_that_keep_dying_at_max_tokens_end_the_run(ctx):
+    """The degenerate open-model pattern: one turn repeats a sentence to the token
+    cap, the next makes one small real call, repeat. Every consecutive counter
+    resets on the call in between, so the truncation count must not."""
+    im_id = ctx.registry.list(kind="image")[0].id
+    ramble = Response(text="and again " * 50, stop_reason="length")
+    backend = Scripted(ramble, looks(1, im_id, box=[0, 0, 110, 110]),
+                        ramble, looks(2, im_id, box=[0, 0, 120, 120]),
+                        ramble, looks(3, im_id, box=[0, 0, 130, 130]))
+    out = run("look", ctx, backend, max_steps=50)
+
+    assert out.reason == "stuck" and out.steps == 5
 
 
 def test_usage_accumulates_across_steps(ctx):
@@ -160,7 +230,7 @@ def test_usage_accumulates_across_steps(ctx):
 # --- the budget is enforced by the loop, not just available to it --------
 def test_a_long_run_stays_inside_the_image_budget(ctx):
     im_id = ctx.registry.list(kind="image")[0].id
-    backend = Scripted(*[looks(i, im_id) for i in range(60)])
+    backend = Scripted(*[looks(i, im_id, box=[0, 0, 100 + i, 100 + i]) for i in range(60)])
     out = run("look", ctx, backend, max_steps=60)
 
     assert out.peak_live_images <= ctx.cfg.context.max_live_images

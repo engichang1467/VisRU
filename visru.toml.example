@@ -8,7 +8,7 @@ name = "claude-sonnet-5"
 
 # --- OpenAI ---
 # backend = "openai_compatible"
-# name = "gpt-5"
+# name = "gpt-5.4-2026-03-05"
 # base_url = "https://api.openai.com/v1"
 
 # --- Hugging Face router (pin the provider, tool support varies) ---
@@ -21,17 +21,28 @@ name = "claude-sonnet-5"
 
 # --- Local vLLM: see evals/open_local.toml for the serve flags ---
 # backend = "openai_compatible"
-# name = "Qwen/Qwen3-VL-2B-Instruct"
-# base_url = "http://localhost:8000/v1"
+# name = "Qwen/Qwen3-VL-32B-Thinking-FP8"
+# base_url = "http://localhost:23203/v1"
 # max_edge = 1024
 # max_visual_tokens = 1600
 # patch = 16
-# max_tokens = 4000
+# max_tokens = 3000     
+                      
+# temperature = 1.0
+# top_p = 0.95           
+# presence_penalty = 1.0
 
+# --- Anthropic (default; no base_url) ---
 [context]
 max_live_images = 16         # stays under the 20-image threshold
 elide_batch = 8              # elide in batches to keep the cached prefix stable
 compact_at_tokens = 150_000
 
+# --- Local vLLM: see evals/open_local.toml for the serve flags ---
+# max_live_images = 4         # stays under the 20-image threshold
+# elide_batch = 2              # elide in batches to keep the cached prefix stable
+# compact_at_tokens = 9_000
+
 [coverage]
 inspected_scale = 1.0        # rendered px per source px that counts as "inspected"
+

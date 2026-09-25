@@ -33,7 +33,7 @@ from typing import Any
 from PIL import Image
 
 from visru.agent.context import ToolCall
-from visru.backends import Response
+from visru.backends.base import Response
 from visru.config import Config
 
 log = logging.getLogger(__name__)

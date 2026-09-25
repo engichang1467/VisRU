@@ -77,6 +77,22 @@ def _video_rows(registry: Registry, asset_id: str, fps: float):
         yield [(f"{asset_id}#{f.index}", f.time, f.image) for f in fresh]
 
 
+def _kept(old: "Index | None", model: str, live: set[str]) -> tuple[list, list, list]:
+    """(refs, times, vector blocks) of the old index still valid: same model, live asset."""
+    if old is None or old.model != model:
+        return [], [], []
+    keep = [i for i, r in enumerate(old.refs) if parse_ref(r)[0] in live]
+    return ([old.refs[i] for i in keep], [float(old.times[i]) for i in keep],
+            [old.vectors[keep]] if keep else [])
+
+
+def _asset_rows(registry: Registry, asset, fps: float):
+    """Batches of (ref, time, image) to embed: an image is one row, a video its samples."""
+    if asset.kind == "image":
+        return [[(asset.id, math.nan, registry.load_image(asset.id))]]
+    return _video_rows(registry, asset.id, fps)
+
+
 def build(root: str | Path, registry: Registry, fps: float = 1.0,
           progress=None) -> tuple[Index, int]:
     """Embed every asset not already indexed. Returns (index, assets added).
@@ -87,24 +103,14 @@ def build(root: str | Path, registry: Registry, fps: float = 1.0,
     """
     emb = models.embedder()
     old = load(root)
-    if old is not None and old.model != emb.name:
-        old = None
-    live = set(registry.assets)
-    keep = [i for i, r in enumerate(old.refs) if parse_ref(r)[0] in live] if old else []
-    refs = [old.refs[i] for i in keep] if old else []
-    times = [float(old.times[i]) for i in keep] if old else []
-    vectors = [old.vectors[keep]] if old and keep else []
+    refs, times, vectors = _kept(old, emb.name, set(registry.assets))
     have = {parse_ref(r)[0] for r in refs}
 
     added = 0
     for asset in registry.list():
         if asset.id in have:
             continue
-        if asset.kind == "image":
-            batches = [[(asset.id, math.nan, registry.load_image(asset.id))]]
-        else:
-            batches = _video_rows(registry, asset.id, fps)
-        for batch in batches:
+        for batch in _asset_rows(registry, asset, fps):
             if not batch:
                 continue
             vectors.append(emb.images([im for _, _, im in batch]).astype(np.float16))

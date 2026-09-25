@@ -137,23 +137,10 @@ def run(workspace: str, questions_path: str, arm: str, out: str | None = None,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--workspace", required=True)
-    parser.add_argument("--questions", required=True)
+    suite.add_run_args(parser)
     parser.add_argument("--arm", required=True, choices=list(ARMS))
     parser.add_argument("--out", default=None, help="run file; an existing one resumes")
-    parser.add_argument("--model", default=None, help="defaults to visru.toml")
-    parser.add_argument("--backend", default=None,
-                        help="anthropic | openai_compatible; defaults to visru.toml. "
-                             "Pin the provider in --model for the open path, e.g. "
-                             "Qwen/Qwen3-VL-30B-A3B-Instruct:novita")
-    parser.add_argument("--config", default=None,
-                        help="visru.toml for this arm; defaults to the workspace's")
-    parser.add_argument("--sample", type=int, default=None,
-                        help="fixed-seed subset of labelled questions")
-    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=30)
-    parser.add_argument("--script", default=None,
-                        help="replay this turn script instead of calling a model")
     args = parser.parse_args(argv)
 
     out = run(args.workspace, args.questions, args.arm, args.out, args.model,

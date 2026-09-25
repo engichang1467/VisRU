@@ -61,14 +61,26 @@ def _claims(ctx: ToolContext, session: str) -> list[dict]:
     return json.loads(path.read_text())["claims"] if path.is_file() else []
 
 
+def _claim_lines(head: str, claims: list[dict], cited: list[str]) -> str:
+    """One window's report as text; the artifact IDs it cites are added to `cited`."""
+    lines = [head]
+    for c in claims:
+        refs = list(c.get("evidence", [])) + [
+            k["check"] for k in c.get("checks", []) if isinstance(k, dict)
+            and k.get("check")]
+        cited.extend(refs)
+        lines.append(f"  {c['claim_id']} [{c['status']}] {c['text']}"
+                     + (f"  evidence: {', '.join(refs)}" if refs else ""))
+    if not claims:
+        lines.append("  no report: treat this window as not inspected")
+    return "\n".join(lines)
+
+
 def delegate(ctx: ToolContext, ref: str, question: str,
              windows: list[list[float]] | None = None, n: int = 4,
              max_steps: int = 15) -> ToolResult:
     """Run one subagent per time window and collect what each reported."""
-    from visru.agent import loop  # the loop imports the tool registry, which imports this
-    from visru.tools.registry import HARNESS_ONLY, TOOLS
-
-    if ctx.backend is None:
+    if ctx.run_child is None:
         raise ValueError("delegate runs subagents, which needs the visru agent loop; "
                          "under another harness, use its own subagents")
     if not str(question).strip():
@@ -79,7 +91,6 @@ def delegate(ctx: ToolContext, ref: str, question: str,
         raise ValueError(f"{asset_id} is an image; delegate splits a video by time")
     duration = asset.duration or 0.0
     spans = _windows(duration, windows, n)
-    tools = [name for name in TOOLS if name not in HARNESS_ONLY]  # no recursion
 
     blocks, cited = [], []
     for t0, t1 in spans:
@@ -87,24 +98,14 @@ def delegate(ctx: ToolContext, ref: str, question: str,
         child = ToolContext(ctx.root, ctx.cfg, session=f"{ctx.session}_w{ctx.children}")
         task = CHILD_TASK.format(asset=asset_id, name=asset.name, duration=duration,
                                  t0=t0, t1=t1, question=question)
-        result = loop.run(task, child, ctx.backend, max_steps=max_steps, tools=tools)
+        result = ctx.run_child(task, child, max_steps)  # no delegate inside: no recursion
         for key, value in result.usage.items():
             ctx.child_usage[key] = ctx.child_usage.get(key, 0) + value
 
+        claims = _claims(ctx, child.session) if result.reported else []
         head = (f"[{t0:.2f}..{t1:.2f}s] {child.session}: {result.reason} after "
                 f"{result.steps} steps")
-        claims = _claims(ctx, child.session) if result.reported else []
-        lines = [head]
-        for c in claims:
-            refs = list(c.get("evidence", [])) + [
-                k["check"] for k in c.get("checks", []) if isinstance(k, dict)
-                and k.get("check")]
-            cited.extend(refs)
-            lines.append(f"  {c['claim_id']} [{c['status']}] {c['text']}"
-                         + (f"  evidence: {', '.join(refs)}" if refs else ""))
-        if not claims:
-            lines.append("  no report: treat this window as not inspected")
-        blocks.append("\n".join(lines))
+        blocks.append(_claim_lines(head, claims, cited))
 
     text = (f"delegated {len(spans)} windows of {asset_id} ({duration:.1f}s) to subagents:\n"
             + "\n".join(blocks)

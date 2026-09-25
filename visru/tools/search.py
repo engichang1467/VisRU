@@ -104,6 +104,33 @@ def _prompt_boxes(ctx: ToolContext, from_artifact: str | None, marks: list[int] 
     return out
 
 
+def _point_prompts(points: list[list[float]],
+                   labels: list[int] | None) -> tuple[list[int], list[str]]:
+    """Labels (all foreground unless given) and one object name per point."""
+    labels = labels or [1] * len(points)
+    if len(labels) != len(points):
+        raise ValueError(f"{len(points)} points but {len(labels)} labels")
+    return labels, [f"point ({p[0]:.0f}, {p[1]:.0f})" for p in points]
+
+
+def _mask_marks(names: list[str], masks, scores: list[float],
+                tf) -> tuple[list[Mark], dict[int, Image.Image]]:
+    """A mark per prompt, boxed in source pixels, and its mask where it is not empty."""
+    made: list[Mark] = []
+    images: dict[int, Image.Image] = {}
+    for i, name in enumerate(names):
+        binary = masks[i, 0].cpu().numpy()
+        mask_img = Image.fromarray((binary * 255).astype("uint8"), mode="L")
+        ys, xs = binary.nonzero()
+        if len(xs) == 0:
+            made.append(Mark(id=i + 1, label=f"{name} (empty mask)", score=round(scores[i], 3)))
+            continue
+        source_box = _to_source_box(tf, [xs.min(), ys.min(), xs.max() + 1, ys.max() + 1])
+        made.append(Mark(id=i + 1, label=name, box=source_box, score=round(scores[i], 3)))
+        images[i + 1] = mask_img
+    return made, images
+
+
 def segment(ctx: ToolContext, ref: str, points: list[list[float]] | None = None,
             labels: list[int] | None = None, boxes: list[list[float]] | None = None,
             from_artifact: str | None = None, marks: list[int] | None = None,
@@ -127,13 +154,10 @@ def segment(ctx: ToolContext, ref: str, points: list[list[float]] | None = None,
     processor, model = models.segmenter()
 
     if points:
-        labels = labels or [1] * len(points)
-        if len(labels) != len(points):
-            raise ValueError(f"{len(points)} points but {len(labels)} labels")
+        labels, names = _point_prompts(points, labels)
         # One object per point: the model asked about N things, not one N-point thing.
         view_points = [[list(tf.to_view(p[0], p[1]))] for p in points]
         kwargs = {"input_points": [view_points], "input_labels": [[[v] for v in labels]]}
-        names = [f"point ({p[0]:.0f}, {p[1]:.0f})" for p in points]
     else:
         names = [name for name, _ in box_prompts]
         view_boxes = [list(tf.to_view(b[0], b[1])) + list(tf.to_view(b[2], b[3]))
@@ -148,19 +172,7 @@ def segment(ctx: ToolContext, ref: str, points: list[list[float]] | None = None,
     if isinstance(scores, float):
         scores = [scores]
 
-    made: list[Mark] = []
-    images: dict[int, Image.Image] = {}
-    for i, name in enumerate(names):
-        binary = masks[i, 0].cpu().numpy()
-        mask_img = Image.fromarray((binary * 255).astype("uint8"), mode="L")
-        ys, xs = binary.nonzero()
-        if len(xs) == 0:
-            made.append(Mark(id=i + 1, label=f"{name} (empty mask)", score=round(scores[i], 3)))
-            continue
-        source_box = _to_source_box(tf, [xs.min(), ys.min(), xs.max() + 1, ys.max() + 1])
-        made.append(Mark(id=i + 1, label=name, box=source_box, score=round(scores[i], 3)))
-        images[i + 1] = mask_img
-
+    made, images = _mask_marks(names, masks, scores, tf)
     out = draw_marks(img, made, tf, masks=images)
     # Masks are stored in this artifact's view frame; its transform places them.
     art = ctx.artifacts.save(out, kind="segment", parent=ref, transform=tf, marks=made,
@@ -223,14 +235,8 @@ def _paddle_lines(raw):
         yield [list(p) for p in quad], text, score
 
 
-def search(ctx: ToolContext, query: str, ref: str | None = None, t0: float | None = None,
-           t1: float | None = None, k: int = 8) -> ToolResult:
-    """Rank indexed images and video frames by similarity to a text query.
-
-    For video, hits on neighbouring samples merge into time windows — the answer to
-    "when does this happen" at the index's resolution (1 frame per second by
-    default), which is a place to look, not a timestamp to report.
-    """
+def _search_index(ctx: ToolContext, query: str, k: int):
+    """The workspace's embedding index, once the query is known to be searchable."""
     if not str(query).strip():
         raise ValueError("search needs a text query, e.g. 'a person opens a door'")
     if k < 1:
@@ -239,13 +245,42 @@ def search(ctx: ToolContext, query: str, ref: str | None = None, t0: float | Non
     if idx is None or not len(idx):
         raise ValueError("this workspace has no embedding index; run "
                          "`visru index <workspace> --embed` first")
-    asset_id = None
-    if ref:
-        asset_id, _ = parse_ref(resolve_ref(ctx, ref)[0])
-        ctx.registry.get(asset_id)  # an unknown ID should say so, not return nothing
-        if asset_id not in idx.assets():
-            raise ValueError(f"{asset_id} is not in the embedding index; re-run "
-                             "`visru index <workspace> --embed`")
+    return idx
+
+
+def _indexed_asset(ctx: ToolContext, idx, ref: str) -> str:
+    asset_id, _ = parse_ref(resolve_ref(ctx, ref)[0])
+    ctx.registry.get(asset_id)  # an unknown ID should say so, not return nothing
+    if asset_id not in idx.assets():
+        raise ValueError(f"{asset_id} is not in the embedding index; re-run "
+                         "`visru index <workspace> --embed`")
+    return asset_id
+
+
+def _hit_lines(hits, wins: list[dict]) -> str:
+    """Ranked hits, then the time windows they merge into, if any."""
+    ranked = "\n".join(
+        f"  {i}. {h.ref}" + (f" t={h.time:.2f}s" if h.time is not None else "")
+        + f" score={h.score:.3f}" for i, h in enumerate(hits, start=1))
+    if not wins:
+        return ranked
+    listing = "\n".join(f"  mark {i}: {w['asset']} t={w['t0']}..{w['t1']}s "
+                        f"best={w['score']:.3f} ({len(w['frames'])} frames)"
+                        for i, w in enumerate(wins, start=1))
+    return (f"{ranked}\nTime windows, adjacent hits merged (cross_check refers to "
+            f"these as marks):\n{listing}")
+
+
+def search(ctx: ToolContext, query: str, ref: str | None = None, t0: float | None = None,
+           t1: float | None = None, k: int = 8) -> ToolResult:
+    """Rank indexed images and video frames by similarity to a text query.
+
+    For video, hits on neighbouring samples merge into time windows — the answer to
+    "when does this happen" at the index's resolution (1 frame per second by
+    default), which is a place to look, not a timestamp to report.
+    """
+    idx = _search_index(ctx, query, k)
+    asset_id = _indexed_asset(ctx, idx, ref) if ref else None
 
     hits = index.query(idx, query, asset_id, t0, t1, k)
     scope = asset_id or "the workspace"
@@ -256,16 +291,8 @@ def search(ctx: ToolContext, query: str, ref: str | None = None, t0: float | Non
     durations = {parse_ref(h.ref)[0]: ctx.registry.get(h.ref).duration or 0.0
                  for h in hits if h.time is not None}
     wins = index.windows(idx, hits, durations)
-    ranked = "\n".join(
-        f"  {i}. {h.ref}" + (f" t={h.time:.2f}s" if h.time is not None else "")
-        + f" score={h.score:.3f}" for i, h in enumerate(hits, start=1))
-    listing = "\n".join(f"  mark {i}: {w['asset']} t={w['t0']}..{w['t1']}s "
-                        f"best={w['score']:.3f} ({len(w['frames'])} frames)"
-                        for i, w in enumerate(wins, start=1))
     text = (f"search {query!r} over {scope}{span}: {len(hits)} hits (scores are "
-            f"relative; compare them within one search only)\n{ranked}"
-            + (f"\nTime windows, adjacent hits merged (cross_check refers to these "
-               f"as marks):\n{listing}" if wins else ""))
+            f"relative; compare them within one search only)\n{_hit_lines(hits, wins)}")
 
     top = parse_ref(hits[0].ref)[0]
     if hits[0].time is None:  # an image ranked first: view it, there is no sheet
@@ -300,33 +327,9 @@ def _runs(indices: list[int], step: int) -> list[tuple[int, int]]:
     return out
 
 
-def track(ctx: ToolContext, ref: str, points: list[list[float]] | None = None,
-          labels: list[int] | None = None, boxes: list[list[float]] | None = None,
-          from_artifact: str | None = None, marks: list[int] | None = None,
-          t1: float | None = None, stride: int = 1, max_frames: int = 150) -> ToolResult:
-    """Follow objects from one video frame forward with SAM 2's memory.
-
-    Prompts are source pixels on the frame `ref` names (`vid_x#k`), one object per
-    point or box, as in `segment`. Reports, per object, when it is present and
-    where it drops out — the shape of "when did the cup leave the gripper".
-
-    ponytail: forward only. Add a reverse pass when a prompt frame placed mid-event
-    misses the onset.
-    """
-    import numpy as np
-    import torch
-
-    asset_id, start = parse_ref(resolve_ref(ctx, ref)[0])
-    if start is None:
-        raise ValueError(f"track starts from one frame: pass {asset_id}#<frame_index>, "
-                         "e.g. a ref from sample_frames")
-    if stride < 1 or max_frames < 2:
-        raise ValueError("stride must be >= 1 and max_frames >= 2")
-    box_prompts = _prompt_boxes(ctx, from_artifact, marks, boxes)
-    if bool(points) == bool(box_prompts):
-        raise ValueError("track needs points=[[x, y], ...] or boxes / from_artifact marks "
-                         "(not both), in source pixels on the starting frame")
-
+def _track_frames(ctx: ToolContext, asset_id: str, start: int, t1: float | None,
+                  stride: int, max_frames: int):
+    """Decode the frames to track over, and the scale and size SAM 2 sees them at."""
     meta = ctx.registry.video_meta(asset_id)
     last = meta.frames - 1 if t1 is None else min(meta.frames - 1, int(t1 * meta.fps))
     if last <= start:
@@ -337,21 +340,27 @@ def track(ctx: ToolContext, ref: str, points: list[list[float]] | None = None,
                              [i / meta.fps for i in wanted], meta)
     s = min(1.0, TRACK_EDGE / max(meta.width, meta.height))
     size = (max(1, round(meta.width * s)), max(1, round(meta.height * s)))
+    return frames, s, size
+
+
+def _track_prompt(points, labels, box_prompts, s: float):
+    """(labels, object names, SAM 2 prompt at scale s) from points or box prompts."""
+    if points:
+        labels, names = _point_prompts(points, labels)
+        return labels, names, {"input_points": [[[[p[0] * s, p[1] * s]] for p in points]],
+                               "input_labels": [[[v] for v in labels]]}
+    names = [name for name, _ in box_prompts]
+    return labels, names, {"input_boxes": [[[v * s for v in b] for _, b in box_prompts]]}
+
+
+def _propagate(frames, s: float, size: tuple[int, int], prompt: dict,
+               obj_ids: list[int]) -> dict[int, list[dict]]:
+    """Prompt SAM 2 on the first frame; per object, its source-pixel box on each frame."""
+    import numpy as np
+    import torch
+
     images = [f.image.resize(size, Image.Resampling.BILINEAR) if s < 1 else f.image
               for f in frames]
-
-    if points:
-        labels = labels or [1] * len(points)
-        if len(labels) != len(points):
-            raise ValueError(f"{len(points)} points but {len(labels)} labels")
-        names = [f"point ({p[0]:.0f}, {p[1]:.0f})" for p in points]
-        prompt = {"input_points": [[[[p[0] * s, p[1] * s]] for p in points]],
-                  "input_labels": [[[v] for v in labels]]}
-    else:
-        names = [name for name, _ in box_prompts]
-        prompt = {"input_boxes": [[[v * s for v in b] for _, b in box_prompts]]}
-    obj_ids = list(range(1, len(names) + 1))
-
     processor, model = models.video_segmenter()
     session = processor.init_video_session(video=images, inference_device=model.device,
                                            dtype=models.dtype())
@@ -372,39 +381,78 @@ def track(ctx: ToolContext, ref: str, points: list[list[float]] | None = None,
                     for v in (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1))
                 per_obj[o].append({"index": frame.index, "time": round(frame.time, 3),
                                    "box": box, "area": round(float(binary.mean()), 5)})
+    return per_obj
 
-    objects, lines = {}, []
-    step = stride
-    for o, name in zip(obj_ids, names):
-        rows = sorted(per_obj[o], key=lambda r: r["index"])
-        present = [r["index"] for r in rows if r["box"]]
-        runs = _runs(present, step)
-        at = {r["index"]: r["time"] for r in rows}
-        window = [at[present[0]], at[present[-1]]] if present else None
-        objects[o] = {"label": name, "frames": rows, "present": window,
-                      "runs": [[at[a], at[b]] for a, b in runs]}
-        if not present:
-            lines.append(f"  mark {o}: {name} — lost immediately; no mask on any frame")
-            continue
-        gone = [r for r in rows if r["index"] > present[-1]]
-        runs_text = ", ".join(f"{at[a]:.2f}..{at[b]:.2f}s" for a, b in runs)
-        lines.append(
-            f"  mark {o}: {name} — present {runs_text}"
-            + (f"; gone from {gone[0]['time']:.2f}s (frame {gone[0]['index']}) to the "
-               f"end of the tracked range" if gone else "; present through the end")
-            + f"; area {rows[0]['area']:.2%} → {rows[-1]['area']:.2%} of the frame")
 
-    # The sheet: up to 12 of the tracked frames, evenly spaced, first and last kept.
+def _track_summary(o: int, name: str, rows: list[dict], step: int) -> tuple[dict, str]:
+    """One tracked object: its stored record, and the line the model reads."""
+    rows = sorted(rows, key=lambda r: r["index"])
+    present = [r["index"] for r in rows if r["box"]]
+    runs = _runs(present, step)
+    at = {r["index"]: r["time"] for r in rows}
+    window = [at[present[0]], at[present[-1]]] if present else None
+    record = {"label": name, "frames": rows, "present": window,
+              "runs": [[at[a], at[b]] for a, b in runs]}
+    if not present:
+        return record, f"  mark {o}: {name} — lost immediately; no mask on any frame"
+    gone = [r for r in rows if r["index"] > present[-1]]
+    runs_text = ", ".join(f"{at[a]:.2f}..{at[b]:.2f}s" for a, b in runs)
+    return record, (
+        f"  mark {o}: {name} — present {runs_text}"
+        + (f"; gone from {gone[0]['time']:.2f}s (frame {gone[0]['index']}) to the "
+           f"end of the tracked range" if gone else "; present through the end")
+        + f"; area {rows[0]['area']:.2%} → {rows[-1]['area']:.2%} of the frame")
+
+
+def _sheet_boxes(frames, objects: dict[int, dict]) -> tuple[dict[int, list[Mark]], list]:
+    """Up to 12 of the tracked frames, evenly spaced, first and last kept, with boxes."""
     pick = sorted({round(i * (len(frames) - 1) / (SHEET_CELLS - 1))
                    for i in range(SHEET_CELLS)}) if len(frames) > SHEET_CELLS \
         else range(len(frames))
-    times = [frames[i].time for i in pick]
     sheet_boxes: dict[int, list[Mark]] = {}
     for i in pick:
         idx = frames[i].index
-        sheet_boxes[idx] = [Mark(id=o, label=objects[o]["label"], box=r["box"])
-                            for o in obj_ids for r in objects[o]["frames"]
+        sheet_boxes[idx] = [Mark(id=o, label=obj["label"], box=r["box"])
+                            for o, obj in objects.items() for r in obj["frames"]
                             if r["index"] == idx and r["box"]]
+    return sheet_boxes, [frames[i].time for i in pick]
+
+
+def track(ctx: ToolContext, ref: str, points: list[list[float]] | None = None,
+          labels: list[int] | None = None, boxes: list[list[float]] | None = None,
+          from_artifact: str | None = None, marks: list[int] | None = None,
+          t1: float | None = None, stride: int = 1, max_frames: int = 150) -> ToolResult:
+    """Follow objects from one video frame forward with SAM 2's memory.
+
+    Prompts are source pixels on the frame `ref` names (`vid_x#k`), one object per
+    point or box, as in `segment`. Reports, per object, when it is present and
+    where it drops out — the shape of "when did the cup leave the gripper".
+
+    ponytail: forward only. Add a reverse pass when a prompt frame placed mid-event
+    misses the onset.
+    """
+    asset_id, start = parse_ref(resolve_ref(ctx, ref)[0])
+    if start is None:
+        raise ValueError(f"track starts from one frame: pass {asset_id}#<frame_index>, "
+                         "e.g. a ref from sample_frames")
+    if stride < 1 or max_frames < 2:
+        raise ValueError("stride must be >= 1 and max_frames >= 2")
+    box_prompts = _prompt_boxes(ctx, from_artifact, marks, boxes)
+    if bool(points) == bool(box_prompts):
+        raise ValueError("track needs points=[[x, y], ...] or boxes / from_artifact marks "
+                         "(not both), in source pixels on the starting frame")
+
+    frames, s, size = _track_frames(ctx, asset_id, start, t1, stride, max_frames)
+    labels, names, prompt = _track_prompt(points, labels, box_prompts, s)
+    obj_ids = list(range(1, len(names) + 1))
+    per_obj = _propagate(frames, s, size, prompt, obj_ids)
+
+    objects, lines = {}, []
+    for o, name in zip(obj_ids, names):
+        objects[o], line = _track_summary(o, name, per_obj[o], stride)
+        lines.append(line)
+
+    sheet_boxes, times = _sheet_boxes(frames, objects)
     sheet = build_sheet(ctx, asset_id, times=times, boxes=sheet_boxes)
     first = [Mark(id=o, label=objects[o]["label"], box=objects[o]["frames"][0]["box"])
              for o in obj_ids]

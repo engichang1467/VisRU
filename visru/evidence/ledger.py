@@ -242,48 +242,55 @@ class Ledger:
             if claim.status not in STATUSES:
                 found.append(f"{tag}: status {claim.status!r} is not one of {list(STATUSES)}")
                 continue
-
-            for raw in claim.checks:
-                ref = raw.get("check") if isinstance(raw, dict) else None
-                if ref is not None:
-                    try:
-                        kind = self.artifacts.load(ref).kind
-                    except KeyError:
-                        kind = None
-                    if kind != "check":
-                        found.append(f"{tag}: check {ref!r} is not a cross_check artifact")
-
-            for artifact_id in claim.evidence:
-                try:
-                    self.artifacts.load(artifact_id)
-                except KeyError:
-                    found.append(f"{tag}: evidence {artifact_id!r} is not an artifact in "
-                                 "this workspace")
-
-            warranted = self.warranted_status(claim)
-            if claim.status == HYPOTHESIS and claim.evidence:
-                found.append(f"{tag}: a hypothesis carries no evidence, but {claim.evidence} "
-                             "was cited — call it supported instead")
-            elif claim.status != HYPOTHESIS and not claim.evidence:
-                found.append(f"{tag}: status {claim.status!r} needs at least one evidence "
-                             "artifact; a claim with none is a hypothesis")
-            elif warranted == CONTESTED and claim.status != CONTESTED:
-                found.append(f"{tag}: a check disagreed, so this claim is contested, "
-                             f"not {claim.status!r}")
-            elif claim.status == VERIFIED and warranted != VERIFIED:
-                checks = self.checks(claim)
-                detail = []
-                for check in checks:
-                    detail.extend(self.check_problems(check))
-                if detail:
-                    reason = "; ".join(detail)
-                elif checks:
-                    reason = ("checks you write yourself do not count; run cross_check "
-                              "and cite the artifact it returns as {\"check\": \"a_…\"}")
-                else:
-                    reason = "no check was run against it"
-                found.append(f"{tag}: verified needs a passing independent check — {reason}")
+            found.extend(self._reference_problems(tag, claim))
+            status = self._status_problem(tag, claim)
+            if status:
+                found.append(status)
         return found
+
+    def _kind(self, artifact_id: str) -> str | None:
+        try:
+            return self.artifacts.load(artifact_id).kind
+        except KeyError:
+            return None
+
+    def _reference_problems(self, tag: str, claim: Claim) -> list[str]:
+        """Cited checks that are not cross_check artifacts, evidence that does not exist."""
+        found = []
+        for raw in claim.checks:
+            ref = raw.get("check") if isinstance(raw, dict) else None
+            if ref is not None and self._kind(ref) != "check":
+                found.append(f"{tag}: check {ref!r} is not a cross_check artifact")
+        for artifact_id in claim.evidence:
+            if self._kind(artifact_id) is None:
+                found.append(f"{tag}: evidence {artifact_id!r} is not an artifact in "
+                             "this workspace")
+        return found
+
+    def _status_problem(self, tag: str, claim: Claim) -> str | None:
+        """Why the claimed status is stronger than the evidence warrants, if it is."""
+        warranted = self.warranted_status(claim)
+        if claim.status == HYPOTHESIS and claim.evidence:
+            return (f"{tag}: a hypothesis carries no evidence, but {claim.evidence} "
+                    "was cited — call it supported instead")
+        if claim.status != HYPOTHESIS and not claim.evidence:
+            return (f"{tag}: status {claim.status!r} needs at least one evidence "
+                    "artifact; a claim with none is a hypothesis")
+        if warranted == CONTESTED and claim.status != CONTESTED:
+            return (f"{tag}: a check disagreed, so this claim is contested, "
+                    f"not {claim.status!r}")
+        if claim.status != VERIFIED or warranted == VERIFIED:
+            return None
+        checks = self.checks(claim)
+        detail = [p for check in checks for p in self.check_problems(check)]
+        if detail:
+            reason = "; ".join(detail)
+        elif checks:
+            reason = ("checks you write yourself do not count; run cross_check "
+                      "and cite the artifact it returns as {\"check\": \"a_…\"}")
+        else:
+            reason = "no check was run against it"
+        return f"{tag}: verified needs a passing independent check — {reason}"
 
     # --- submission ------------------------------------------------------
     def submit(self, claims: list[Claim], coverage: dict[str, Any] | None = None,

@@ -391,7 +391,7 @@ def test_delegate_needs_the_loop_and_a_video(square_ws, tmp_path):
     ctx = open_workspace(square_ws)
     with pytest.raises(ValueError, match="needs the visru agent loop"):
         delegate(ctx, _vid(ctx), "anything")
-    ctx.backend = object()
+    ctx.run_child = object()
     with pytest.raises(ValueError, match="1..8"):
         delegate(ctx, _vid(ctx), "anything", n=9)
     with pytest.raises(ValueError, match="empty"):

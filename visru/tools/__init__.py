@@ -47,9 +47,11 @@ class ToolContext:
         self.artifacts = ArtifactStore(self.root, self.session)
         self._registry = Registry.load(self.root)
         self._stamp = self._registry_stamp()
-        # Set by the agent loop, for `delegate`: the model that runs subagents, and
-        # what they spent, so a session's cost includes its children's.
-        self.backend = None
+        # Set by the agent loop, for `delegate`: how to run a subagent session on
+        # the loop's model, and what they spent, so a session's cost includes its
+        # children's. A callable rather than the loop itself, which imports the
+        # tool registry, which imports `delegate`.
+        self.run_child = None
         self.child_usage: dict[str, int] = {}
         self.children = 0  # subagent sessions started, so each gets a fresh ID
 

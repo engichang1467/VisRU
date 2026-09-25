@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from visru.agent.context import ToolCall
-from visru.backends import Response
+from visru.backends.base import Response
 from visru.config import Config
 
 DONE = "That is everything I can determine from the script."

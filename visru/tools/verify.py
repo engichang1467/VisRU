@@ -57,6 +57,30 @@ def _reproject_mask(mask: Image.Image, source_tf: ViewTransform,
     return canvas
 
 
+def _claimed_shapes(ctx: ToolContext, boxes, labels, from_artifact, marks
+                    ) -> tuple[list[Mark], list[tuple[int, str, int]]]:
+    """Marks to draw, and (new mark id, artifact, mark id) for each mask to replay."""
+    drawn: list[Mark] = []
+    mask_sources: list[tuple[int, str, int]] = []
+    labels = labels or []
+    for i, b in enumerate(boxes or []):
+        if len(b) != 4:
+            raise ValueError(f"each box must be [x0, y0, x1, y1] in source pixels, got {b}")
+        label = labels[i] if i < len(labels) else "claimed"
+        drawn.append(Mark(id=len(drawn) + 1, label=label, box=tuple(float(v) for v in b)))
+    if not from_artifact:
+        return drawn, mask_sources
+    art = ctx.artifacts.load(from_artifact)
+    for mark_id in marks or [m["id"] for m in art.marks]:
+        mark = art.mark(mark_id)
+        drawn.append(Mark(id=len(drawn) + 1,
+                          label=f"{from_artifact} mark {mark_id}: {mark.label}",
+                          box=mark.box, score=mark.score))
+        if mark.mask_path:
+            mask_sources.append((len(drawn), from_artifact, mark_id))
+    return drawn, mask_sources
+
+
 def overlay(ctx: ToolContext, ref: str, boxes: list[list[float]] | None = None,
             labels: list[str] | None = None, from_artifact: str | None = None,
             marks: list[int] | None = None, box: list[int] | None = None) -> ToolResult:
@@ -66,26 +90,7 @@ def overlay(ctx: ToolContext, ref: str, boxes: list[list[float]] | None = None,
     segmentation — including its masks — onto a fresh render, which is how a mask
     found at one zoom gets checked at another.
     """
-    drawn: list[Mark] = []
-    mask_sources: list[tuple[int, str, int]] = []
-
-    for i, b in enumerate(boxes or []):
-        if len(b) != 4:
-            raise ValueError(f"each box must be [x0, y0, x1, y1] in source pixels, got {b}")
-        label = (labels or [])[i] if i < len(labels or []) else "claimed"
-        drawn.append(Mark(id=len(drawn) + 1, label=label, box=tuple(float(v) for v in b)))
-
-    if from_artifact:
-        art = ctx.artifacts.load(from_artifact)
-        wanted = marks or [m["id"] for m in art.marks]
-        for mark_id in wanted:
-            mark = art.mark(mark_id)
-            drawn.append(Mark(id=len(drawn) + 1,
-                              label=f"{from_artifact} mark {mark_id}: {mark.label}",
-                              box=mark.box, score=mark.score))
-            if mark.mask_path:
-                mask_sources.append((len(drawn), from_artifact, mark_id))
-
+    drawn, mask_sources = _claimed_shapes(ctx, boxes, labels, from_artifact, marks)
     if not drawn:
         raise ValueError(
             "overlay needs boxes=[[x0, y0, x1, y1], ...] in source pixels, or "
@@ -214,17 +219,9 @@ def _agree(kind: str, readings: list) -> tuple[bool, dict]:
     return iou >= IOU_AGREE, {"iou": round(iou, 3)}
 
 
-def cross_check(ctx: ToolContext, kind: str, artifacts: list[str],
-                value: str | int | None = None, box: list[float] | None = None,
-                marks: list | None = None) -> ToolResult:
-    """Compare what two independent methods say, and record the verdict.
-
-    Runs no model: it reads outputs that already exist. A `view` artifact stands for
-    the model's own reading (`value`, or `box` for localize); detect, segment and
-    ocr artifacts speak through their marks, optionally narrowed by `marks`, one
-    entry per artifact. Pairs that share a model or a lineage are refused before
-    anything is compared, since their agreement would mean nothing.
-    """
+def _check_args(kind: str, artifacts: list[str] | None,
+                marks: list | None) -> tuple[list[str], list]:
+    """Distinct artifact IDs, and marks: empty, or one entry per artifact."""
     if kind not in CHECK_KINDS:
         raise ValueError(f"kind must be one of {list(CHECK_KINDS)}, got {kind!r}")
     artifacts = list(dict.fromkeys(artifacts or []))
@@ -234,8 +231,11 @@ def cross_check(ctx: ToolContext, kind: str, artifacts: list[str],
     if marks and len(marks) != len(artifacts):
         raise ValueError(f"marks has {len(marks)} entries for {len(artifacts)} artifacts; "
                          "give one per artifact (null for all of its marks)")
+    return artifacts, marks
 
-    arts = [ctx.artifacts.load(a) for a in artifacts]
+
+def _checked_asset(ctx: ToolContext, kind: str, arts: list[Artifact]) -> str:
+    """The one asset every artifact reads, refusing kinds this check cannot compare."""
     allowed = TEMPORAL_CHECKABLE if kind == "temporal" else CHECKABLE
     for art in arts:
         if art.kind not in allowed:
@@ -247,16 +247,12 @@ def cross_check(ctx: ToolContext, kind: str, artifacts: list[str],
     if len(assets) != 1:
         raise ValueError(f"the artifacts come from different assets {sorted(assets)}; "
                          "a check compares readings of the same pixels")
-    asset = assets.pop()
+    return assets.pop()
 
-    methods = [f"{a.kind} {a.id}" for a in arts]
-    ledger = Ledger(ctx.root, ctx.session, ctx.artifacts)
-    refused = ledger.check_problems(Check(kind=kind, methods=methods, result="agree",
-                                          artifacts=artifacts))
-    if refused:
-        raise ValueError("cross_check refused, nothing recorded:\n"
-                         + "\n".join(f"- {p}" for p in refused))
 
+def _readings(arts: list[Artifact], marks: list, kind: str, value,
+              box) -> tuple[list, list[Mark]]:
+    """Each method's reading, and the marks to draw on the check artifact."""
     readings, drawn = [], []
     for art, pick in itertools.zip_longest(arts, marks):
         reading, used = _reading(art, kind, pick, value, box)
@@ -269,6 +265,33 @@ def cross_check(ctx: ToolContext, kind: str, artifacts: list[str],
                               box=tuple(float(v) for v in reading)))
     if value is not None and not any(a.kind in READS_ITSELF for a in arts):
         readings.append(value)  # the claimed answer must match the methods too
+    return readings, drawn
+
+
+def cross_check(ctx: ToolContext, kind: str, artifacts: list[str],
+                value: str | int | None = None, box: list[float] | None = None,
+                marks: list | None = None) -> ToolResult:
+    """Compare what two independent methods say, and record the verdict.
+
+    Runs no model: it reads outputs that already exist. A `view` artifact stands for
+    the model's own reading (`value`, or `box` for localize); detect, segment and
+    ocr artifacts speak through their marks, optionally narrowed by `marks`, one
+    entry per artifact. Pairs that share a model or a lineage are refused before
+    anything is compared, since their agreement would mean nothing.
+    """
+    artifacts, marks = _check_args(kind, artifacts, marks)
+    arts = [ctx.artifacts.load(a) for a in artifacts]
+    asset = _checked_asset(ctx, kind, arts)
+
+    methods = [f"{a.kind} {a.id}" for a in arts]
+    ledger = Ledger(ctx.root, ctx.session, ctx.artifacts)
+    refused = ledger.check_problems(Check(kind=kind, methods=methods, result="agree",
+                                          artifacts=artifacts))
+    if refused:
+        raise ValueError("cross_check refused, nothing recorded:\n"
+                         + "\n".join(f"- {p}" for p in refused))
+
+    readings, drawn = _readings(arts, marks, kind, value, box)
     agreed, detail = _agree(kind, readings)
     result = "agree" if agreed else "disagree"
     if kind == "temporal":
@@ -276,14 +299,8 @@ def cross_check(ctx: ToolContext, kind: str, artifacts: list[str],
 
     params = {"kind": kind, "methods": methods, "artifacts": artifacts, "value": value,
               "readings": readings, "result": result, "detail": detail}
-    if kind == "temporal":
-        # The frames at each reading's ends, so a person can see what was compared.
-        times = sorted({t for r in readings for t in r})[:12]
-        sheet = build_sheet(ctx, asset, times=times)
-        art = ctx.artifacts.save(sheet.image, kind="check", parent=asset,
-                                 params={**params, "times": times, "cells": sheet.cells})
-    else:
-        art = _spatial_check(ctx, asset, drawn, params)
+    art = (_temporal_check(ctx, asset, params) if kind == "temporal"
+           else _spatial_check(ctx, asset, drawn, params))
     shown = "\n".join(f"  {m}: {r!r}" for m, r in zip(methods, readings))
     extra = "".join(f" {k}={v}" for k, v in detail.items())
     text = (f"artifact={art.id} cross_check {kind}: {result.upper()}{extra}\n{shown}\n"
@@ -292,6 +309,15 @@ def cross_check(ctx: ToolContext, kind: str, artifacts: list[str],
                f"The methods disagree. Look again, or report the claim as contested "
                f"citing {{\"check\": \"{art.id}\"}}."))
     return ToolResult(text=text, artifacts=[art.id])
+
+
+def _temporal_check(ctx: ToolContext, asset: str, params: dict):
+    """Save a check artifact: the frames at each reading's ends, so a person can see
+    what was compared."""
+    times = sorted({t for r in params["readings"] for t in r})[:12]
+    sheet = build_sheet(ctx, asset, times=times)
+    return ctx.artifacts.save(sheet.image, kind="check", parent=asset,
+                              params={**params, "times": times, "cells": sheet.cells})
 
 
 def _spatial_check(ctx: ToolContext, asset: str, drawn: list[Mark], params: dict):
@@ -307,6 +333,30 @@ def _spatial_check(ctx: ToolContext, asset: str, drawn: list[Mark], params: dict
     out = draw_marks(img, drawn, tf) if drawn else img
     return ctx.artifacts.save(out, kind="check", parent=asset, transform=tf, marks=drawn,
                               params={"box": list(region), **params})
+
+
+def _credit(art: Artifact, inspected_scale: float, grid, frames: dict) -> None:
+    """Mark what one artifact showed as seen: grid cells of an image, frames of a video."""
+    if "cells" in art.params:  # contact sheets, search hits, tracks
+        asset_id, _ = parse_ref(art.parent)
+        seen, _ = frames.setdefault(asset_id, (set(), set()))
+        seen.update(c["index"] for c in art.params.get("cells", []))
+        return
+    if not art.transform or "box" not in art.params:
+        return
+    asset_id, frame = parse_ref(art.transform["asset_id"])
+    fine = art.transform["scale"] >= inspected_scale
+    if frame is not None:
+        seen, close = frames.setdefault(asset_id, (set(), set()))
+        seen.add(frame)
+        if fine:
+            close.add(frame)
+        return
+    seen, close = grid(asset_id)
+    x0, y0, x1, y1 = (v // COVERAGE_CELL for v in art.params["box"])
+    seen[y0:y1 + 1, x0:x1 + 1] = True
+    if fine:
+        close[y0:y1 + 1, x0:x1 + 1] = True
 
 
 def coverage_summary(ctx: ToolContext) -> dict:
@@ -330,28 +380,8 @@ def coverage_summary(ctx: ToolContext) -> dict:
     # A subagent's session is `<parent>_w<i>`: what it looked at, this session did.
     for art in ctx.artifacts.all():
         own = art.session == ctx.session or art.session.startswith(f"{ctx.session}_w")
-        if not own or art.kind == "check":
-            continue  # a check is the harness's render, never shown to the model
-        if "cells" in art.params:  # contact sheets, search hits, tracks
-            asset_id, _ = parse_ref(art.parent)
-            seen, _ = frames.setdefault(asset_id, (set(), set()))
-            seen.update(c["index"] for c in art.params.get("cells", []))
-            continue
-        if not art.transform or "box" not in art.params:
-            continue
-        asset_id, frame = parse_ref(art.transform["asset_id"])
-        fine = art.transform["scale"] >= inspected_scale
-        if frame is not None:
-            seen, close = frames.setdefault(asset_id, (set(), set()))
-            seen.add(frame)
-            if fine:
-                close.add(frame)
-            continue
-        seen, close = grid(asset_id)
-        x0, y0, x1, y1 = (v // COVERAGE_CELL for v in art.params["box"])
-        seen[y0:y1 + 1, x0:x1 + 1] = True
-        if fine:
-            close[y0:y1 + 1, x0:x1 + 1] = True
+        if own and art.kind != "check":  # a check is the harness's render, never shown
+            _credit(art, inspected_scale, grid, frames)
 
     assets = {}
     for asset_id, (seen, close) in grids.items():

@@ -5,6 +5,11 @@ This is the control the Phase 0 exit criterion is measured against. Without it,
 
     python -m evals.baseline --workspace sample_data --questions evals/questions.jsonl
     python -m evals.baseline ... --dry-run     # render and count, call nothing
+    python -m evals.baseline ... --backend openai_compatible --config open.toml
+
+The model comes from visru.toml like every other arm, so the same question set
+runs against Anthropic, a hosted open model or a local vLLM by pointing
+`--config` at a different file.
 
 Video questions write a contact-sheet artifact into the workspace, so what the
 baseline was shown stays inspectable. The run prints their IDs at the end — delete
@@ -17,10 +22,13 @@ import io
 import json
 import os
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
 from evals import suite
+from visru import backends
+from visru.config import load_config
 from visru.tools import open_workspace, navigate
 from visru.tools.navigate import render_region
 
@@ -36,22 +44,24 @@ def _png_b64(image) -> tuple[str, int]:
 
 def run(workspace: str, questions_path: str, out_dir: str = "evals/runs",
         model: str | None = None, dry_run: bool = False, frames: int = 12,
-        sample: int | None = None, seed: int = 0) -> Path:
-    ctx = open_workspace(workspace)
+        sample: int | None = None, seed: int = 0, backend: str | None = None,
+        config: str | None = None, script: str | None = None) -> Path:
+    # Same config path as evals.agent: the open arm wants its own render limits,
+    # and the baseline must be rendered under whatever limits its model has.
+    ctx = open_workspace(workspace, cfg=load_config(config) if config else None)
+    overrides = {k: v for k, v in (("name", model), ("backend", backend)) if v}
+    if script:
+        overrides["backend"] = "replay"
+    ctx.cfg = replace(ctx.cfg, model=replace(ctx.cfg.model, **overrides))
+    model = ctx.cfg.model.name
     questions = suite.load(questions_path)
     if sample is not None:  # the same fixed-seed subset evals.agent draws
         questions = suite.select(questions, sample, seed)
-    model = model or ctx.cfg.model.name
 
-    client = None
-    if not dry_run:
-        import anthropic
-
-        # An org-scoped key must say which workspace to bill; a workspace-scoped
-        # key already knows, and the header is absent.
-        ws = os.environ.get("ANTHROPIC_WORKSPACE_ID")
-        client = anthropic.Anthropic(
-            default_headers={"anthropic-workspace-id": ws} if ws else None)
+    # No tools, one user turn: the backend contract covers the whole baseline, so
+    # Anthropic, vLLM and replay all run this arm without a branch here.
+    driver = None if dry_run else backends.load(
+        ctx.cfg, **({"path": script} if script else {}))
 
     created: list[str] = []
     out = Path(out_dir) / f"baseline_{datetime.now():%Y%m%d_%H%M%S}.jsonl"
@@ -71,26 +81,22 @@ def run(workspace: str, questions_path: str, out_dir: str = "evals/runs",
                 image, tf, _ = render_region(ctx, ref)
                 scale, kind, record_extra = round(tf.scale, 3), "full_frame", {}
 
-            data, nbytes = _png_b64(image)
             record = {"id": q.id, "asset": ref, "arm": "single_pass", "model": model,
-                      "input": kind, "render_px": list(image.size), "scale": scale,
-                      "png_kb": round(nbytes / 1024), "category": q.category,
-                      **record_extra}
+                        "backend": ctx.cfg.model.backend, "input": kind,
+                        "render_px": list(image.size), "scale": scale,
+                        "category": q.category, **record_extra}
 
             if dry_run:
                 record["answer"] = None
             else:
-                message = client.messages.create(
-                    model=model, max_tokens=256,
-                    messages=[{"role": "user", "content": [
-                        {"type": "image", "source": {"type": "base64",
-                                                     "media_type": "image/png",
-                                                     "data": data}},
-                        {"type": "text", "text": f"{PROMPT}\n\n{suite.prompt(q)}"}]}])
-                record["answer"] = "".join(b.text for b in message.content
-                                           if b.type == "text").strip()
-                record["usage"] = {"input": message.usage.input_tokens,
-                                   "output": message.usage.output_tokens}
+                response = driver.complete(
+                    PROMPT,
+                    [{"role": "user", "content": [{"type": "image", "image": image},
+                                                  {"type": "text",
+                                                   "text": suite.prompt(q)}]}],
+                    [])
+                record["answer"] = response.text.strip()
+                record["usage"] = response.usage
             created.extend(record_extra.values())
             sink.write(json.dumps(record) + "\n")
             print(f"{q.id} {kind} {image.size[0]}x{image.size[1]} "
@@ -107,6 +113,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--questions", required=True)
     parser.add_argument("--out-dir", default="evals/runs")
     parser.add_argument("--model", default=None, help="defaults to visru.toml")
+    parser.add_argument("--backend", default=None,
+                        help="anthropic | openai_compatible; defaults to visru.toml. "
+                            "Pin the provider in --model for a hosted open model, "
+                            "e.g. Qwen/Qwen3-VL-30B-A3B-Instruct:novita")
+    parser.add_argument("--config", default=None,
+                        help="visru.toml for this arm; defaults to the workspace's")
     parser.add_argument("--frames", type=int, default=12,
                         help="contact-sheet frames for video questions")
     parser.add_argument("--sample", type=int, default=None,
@@ -114,10 +126,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true",
                         help="render every question's image but call no API")
+    parser.add_argument("--script", default=None,
+                       help="replay this turn script instead of calling a model")
     args = parser.parse_args(argv)
 
     out = run(args.workspace, args.questions, args.out_dir, args.model,
-              args.dry_run, args.frames, args.sample, args.seed)
+              args.dry_run, args.frames, args.sample, args.seed, args.backend,
+              args.config, args.script)
     print(f"\nwrote {out}")
     return 0
 

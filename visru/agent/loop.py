@@ -83,6 +83,15 @@ def _accrue(total: dict[str, int], usage: dict[str, int]) -> None:
         total[key] = total.get(key, 0) + value
 
 
+def _child_runner(backend: Backend):
+    """A subagent session on this model, offered every tool but the harness-only ones."""
+    tools = [name for name in registry.TOOLS if name not in registry.HARNESS_ONLY]
+
+    def run_child(task: str, child: ToolContext, max_steps: int) -> "Session":
+        return run(task, child, backend, max_steps=max_steps, tools=tools)
+    return run_child
+
+
 def run(task: str, ctx: ToolContext, backend: Backend, max_steps: int = 200,
         system: str | None = None, tools: list[str] | None = None) -> Session:
     """Drive one session to an answer, a stop, or the step limit.
@@ -91,7 +100,7 @@ def run(task: str, ctx: ToolContext, backend: Backend, max_steps: int = 200,
     """
     system = system_prompt() if system is None else system
     context = Context(task=task, cfg=ctx.cfg, system=system)
-    ctx.backend, ctx.child_usage = backend, {}  # for `delegate`
+    ctx.run_child, ctx.child_usage = _child_runner(backend), {}  # for `delegate`
     log = Trajectory(ctx.root, ctx.session)
     schemas = registry.schemas(tools)
     log.session_header(ctx.cfg, task, system, [s["name"] for s in schemas])
@@ -133,17 +142,9 @@ def run(task: str, ctx: ToolContext, backend: Backend, max_steps: int = 200,
             reason = "stuck"
             break
 
-        for call in response.calls:
-            result, error = _execute(ctx, call, tools)
-            context.add_output(call, result)
-            log.tool_call(step, call.name, call.arguments, result.text,
-                          result.artifacts, shown=bool(result.images), error=error)
-            peak = max(peak, context.live_images)
-
-            if call.name == "submit_report" and error is None:
-                reason, report = "reported", result.text
-                break
-        if reason == "reported":
+        accepted, peak = _run_calls(ctx, response.calls, tools, context, log, step, peak)
+        if accepted is not None:
+            reason, report = "reported", accepted
             break
 
     _accrue(usage, ctx.child_usage)  # subagents ran on this session's behalf
@@ -151,6 +152,21 @@ def run(task: str, ctx: ToolContext, backend: Backend, max_steps: int = 200,
                    trajectory=log.path, elisions=context.elisions,
                    compactions=context.compactions,
                    peak_live_images=max(peak, context.live_images), usage=usage)
+
+
+def _run_calls(ctx: ToolContext, calls: list[ToolCall], tools: list[str] | None,
+               context: Context, log: Trajectory, step: int,
+               peak: int) -> tuple[str | None, int]:
+    """Run one turn's calls in order. Returns (accepted report text or None, peak)."""
+    for call in calls:
+        result, error = _execute(ctx, call, tools)
+        context.add_output(call, result)
+        log.tool_call(step, call.name, call.arguments, result.text,
+                      result.artifacts, shown=bool(result.images), error=error)
+        peak = max(peak, context.live_images)
+        if call.name == "submit_report" and error is None:
+            return result.text, peak
+    return None, peak
 
 
 def _execute(ctx: ToolContext, call: ToolCall,

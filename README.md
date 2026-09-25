@@ -180,6 +180,10 @@ visru/
 │   ├── suites/                 # vstar, hrbench, video, custom audits
 │   ├── baselines.py            # single pass, zoom only, full tools
 │   └── score.py
+├── training/
+│   ├── export.py               # verified trajectories -> SFT and LIVR records
+│   ├── livr.py                 # latent tokens, bottleneck mask, stage schedule
+│   └── train.py                # LoRA training loop (HF + PEFT)
 └── tests/
     ├── test_geometry.py        # coordinate round trips
     └── test_tools.py
@@ -206,6 +210,9 @@ Each phase ends with an exit criterion. Do not start the next phase until it pas
 
 **Phase 5: open models and training data.** Run an open VLM through vLLM on the same harness. Export trajectories whose claims were verified and correct into an SFT format.
 *Exit:* the open model completes the Phase 2 suite end to end, and the exported dataset loads in your training code. Research starts here.
+
+**Phase 5b: LIVR latents on the open model.** Add Latent Implicit Visual Reasoning (Li et al., CVPR 2026) to the open-VLM backend: K learned latent tokens after every image-bearing tool result, trained with a visual bottleneck mask and answer-only supervision from Phase 5's verified trajectories. First reproduce one result from the paper outside the harness, then train on trajectories, then try latent elision.
+*Exit:* (a) the single-task reproduction lands within 2 points of the paper's number; (b) the `{base, SFT, LIVR} × {single pass, zoom-only, full tools}` table exists on the Phase 2 suite, with visual tokens and tool calls per task; (c) the latent-elision arm stays within an accuracy tolerance of the live-image arm, fixed before running.
 
 ## Quick start (Phase 0)
 
@@ -560,6 +567,59 @@ The system prompt in `agent/prompts/system.md` should state these rules plainly:
 5. Record findings with `note` as you go.
 6. Before submitting, call `coverage` and report what you did not inspect.
 
+### LIVR latents (Phase 5b)
+
+LIVR adds K new tokens to the vocabulary and trains them in two stages. In Stage 1, a modified attention mask stops prompt and answer tokens from attending to image tokens, so visual information can only reach the answer through the latents. Stage 2 restores the normal causal mask so the model learns to use the image tokens and the latents together. The loss is on answer tokens only. There are no helper images, boxes, or chain-of-thought targets, which fits the ledger: a verified, correct claim is exactly an answer-level label.
+
+The paper's defaults, kept fixed across its tasks: K = 16 unshared latents, a 4:6 split of Stage 1 to Stage 2 epochs, LoRA on attention and MLP blocks, frozen vision encoder and projector, and only the new embedding rows unfrozen. Training uses LoRA rank 16, alpha 32, dropout 0.05, AdamW with weight decay 0.01, and an effective batch of 8 (batch 1, 8 accumulation steps). Take the learning rate from the paper's appendix.
+
+**Scope.** LIVR re-encodes image tokens the vision encoder already produced. It cannot recover detail lost to downsampling, so `view` still does the work on small objects in large images. The paper's gains depend on the backbone. On Qwen2.5-VL-3B the largest are on functional correspondence (+13.0) and jigsaw (+12.0). On Qwen3-VL-4B they are on functional correspondence (+8.9) and relative reflectance (+6.0), with jigsaw at only +2.0. The gain on V* is small (78.5 to 80.1 on Qwen2.5-VL-7B). In visru, expect it to matter most on multi-image steps: comparing frames across a failure window, matching views in Phase 4, and reading an `overlay` against its source.
+
+**Placement.** The paper appends latents once, after the prompt. In a multi-turn session, append them after every tool result that contains an image (`view`, `sample_frames`, `overlay`), so each image gets its own latents conditioned on the context at that point:
+
+```text
+<tool_result a_0005> [image tokens] artifact=a_0005 source_box=[...] scale=1.00
+<|latent_0|> ... <|latent_15|>
+```
+
+A Stage 2 model runs with an ordinary causal mask, so inference needs no custom attention. `backends/openai_compat.py` inserts the latent tokens in the chat template and vLLM serves the merged LoRA unchanged.
+
+**Mask.** The paper's bottleneck generalizes to one rule per image: only that image's own tokens and its latents may attend to it. The latents still see the task and earlier turns, which the paper found necessary (blocking latents from the prompt cost about 2.5 points on localization).
+
+```python
+# training/livr.py
+import torch
+
+
+def bottleneck_mask(n: int, groups: list[tuple[torch.Tensor, torch.Tensor]]) -> torch.Tensor:
+    """groups: (img_idx, lat_idx) index tensors, one pair per image.
+    Returns an (n, n) bool mask, True where the row may attend to the column."""
+    m = torch.ones(n, n, dtype=torch.bool).tril()
+    for img, lat in groups:
+        keep = torch.zeros(n, dtype=torch.bool)
+        keep[img] = True
+        keep[lat] = True
+        m[:, img] = m[:, img] & keep[:, None]
+    return m
+```
+
+Flash-attention does not accept an arbitrary mask. Convert this to an additive 4D mask for SDPA, or express it as a FlexAttention `mask_mod`. Latents take ordinary text positions in Qwen's M-RoPE.
+
+**Training data.** `training/export.py` produces two formats from verified, correct trajectories:
+
+1. Single-turn: each claim becomes one record of question, the evidence artifacts it cites (regenerated from the artifact store), and the claim text as the answer. This matches the paper's setup and is the cheap first run.
+2. Multi-turn: the full trajectory with latents after each image, loss on the assistant's tool calls and on `submit_report`.
+
+**Latent elision.** This is the experiment the paper does not cover. Stage 1 trains the latents to be a sufficient summary of an image for everything after it, which is what the context manager needs when an image ages out. Instead of replacing an old image with a text note, keep the KV entries of its 16 latents and evict its image tokens (a full-resolution view is several thousand tokens). To train for it, use a Stage 2 mask that applies the bottleneck only to images older than `max_live_images`, so the training mask matches the inference policy. Rotary position is applied before keys are cached, so evicting positions from the middle of the cache leaves the remaining keys valid; the attention mask length has to shrink with it. This arm needs custom cache eviction and runs in HF, not vLLM.
+
+The latents encode what was relevant when they were computed. A later question about a different part of the same image still needs a fresh `view`, which the artifact ID allows.
+
+**Ledger rules.** Latents are not evidence. Latent-to-image attention maps can be saved as `latent_attention` artifacts for diagnosis, but `submit_report` does not accept them as a claim's only evidence, and a LIVR model checked against its own base model is not an independent check under the shared-model rule.
+
+**Controls.** Copy the paper's three ablations so the table shows the latents are used: latents trained without Stage 1 (capacity alone), the Stage 1 mask without latent tokens (regularization alone), and dropping the latents at test time from the full LIVR model. On localization the paper reports 79.51 for plain SFT, 79.51 for latents without Stage 1, 80.33 for mask without latents, 83.61 for LIVR, and 76.23 for LIVR with latents dropped.
+
+**First run.** Qwen3-VL-4B-Instruct, visual correspondence from HPatches, 1k training examples, 4 epochs of Stage 1 then 6 of Stage 2, K = 16. The paper reports 90.86 for direct SFT and 93.29 for LIVR on its held-out split. Use the paper's layout for this run: one latent block after the prompt, even though each example has two images. Per-image latents are visru's extension, and they belong in the trajectory runs, not in the reproduction.
+
 ## Evaluation
 
 ### Running the Phase 0 exit criterion
@@ -659,7 +719,7 @@ sharing by copying it back into `questions.example.jsonl`.
 ## Open questions for the research phase
 
 - Do the checks predict correctness? If `verified` claims are no more accurate than `supported` ones, the verification layer needs redesigning.
-- Where should looking happen: inside the model through learned token selection (LookWhere-style), or outside through tool calls? At what resolution or corpus size does the answer flip?
+- Where should looking happen: inside the model through learned token selection (LookWhere) or learned latents (LIVR), or outside through tool calls? At what resolution or corpus size does the answer flip, and does combining them beat either?
 - Can trajectories ending in verified, correct claims train an open VLM (SFT, then RL) to reach the same answers with fewer visual tokens?
 - What stopping rule tells the agent it has looked enough? Coverage thresholds are a starting point.
 - How much of the gain comes from zoom alone?
@@ -673,6 +733,7 @@ sharing by copying it back into `questions.example.jsonl`.
 - Yang et al. [Set-of-Mark Prompting Unleashes Extraordinary Visual Grounding in GPT-4V](https://arxiv.org/abs/2310.11441). arXiv 2023.
 - Zheng et al. [DeepEyes: Incentivizing "Thinking with Images" via Reinforcement Learning](https://arxiv.org/abs/2505.14362). arXiv 2025.
 - Fuller et al. [LookWhere? Efficient Visual Recognition by Learning Where to Look and What to See from Self-Supervision](https://arxiv.org/abs/2505.18051). arXiv 2025.
+- Li, Shang, Karlinsky, Feris, Darrell, Herzig. [Latent Implicit Visual Reasoning](https://openaccess.thecvf.com/content/CVPR2026/papers/Li_Latent_Implicit_Visual_Reasoning_CVPR_2026_paper.pdf). CVPR 2026. [arXiv:2512.21218](https://arxiv.org/abs/2512.21218).
 - Ravi et al. [SAM 2: Segment Anything in Images and Videos](https://arxiv.org/abs/2408.00714). ICLR 2025.
 - Minderer et al. [Scaling Open-Vocabulary Object Detection (OWLv2)](https://arxiv.org/abs/2306.09683). NeurIPS 2023.
 - Liu et al. [Grounding DINO](https://arxiv.org/abs/2303.05499). ECCV 2024.

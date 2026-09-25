@@ -305,7 +305,12 @@ python -m evals.score --questions $Q evals/runs/baseline_*.jsonl \
     evals/runs/zoom_only_vstar.jsonl evals/runs/full_vstar.jsonl
 ```
 
-`--sample N --seed S` draws the same questions for every arm. An agent run
+`--sample N --seed S` draws the same questions for every arm. Every arm,
+`evals.baseline` included, takes its model from `visru.toml` and accepts
+`--backend openai_compatible` and `--config open.toml`, so the same question set
+runs against Anthropic, a hosted open model or a local vLLM without touching the
+eval code; each row records the backend it ran on. `--script turns.json` replays
+an arm with no API spend. An agent run
 appends a row per question and resumes if re-run with the same `--out`. The
 scorer prints accuracy per arm and category, mean cost per question, and, for
 agent runs, accuracy grouped by the ledger status of the `answer` claim with a

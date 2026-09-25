@@ -189,6 +189,30 @@ def test_the_agent_arm_runs_end_to_end_on_replay(marker_workspace, tmp_path):
     assert res["accuracy"] == 1.0
 
 
+def test_the_baseline_arm_goes_through_the_configured_backend(marker_workspace,
+                                                              tmp_path):
+    """Any backend, not just Anthropic: the arm sends one image and no tools."""
+    from evals import baseline
+    from visru.workspace.registry import Registry
+
+    reg = Registry(marker_workspace)
+    reg.scan()
+    reg.save()
+    image = [a for a in reg.list() if a.kind == "image"][0]
+    questions = tmp_path / "q.jsonl"
+    questions.write_text(json.dumps(
+        {"id": "q0", "asset": image.name, "question": "What colour is the square?",
+        "answer": "red", "category": "colour"}) + "\n")
+    script = tmp_path / "turns.json"
+    script.write_text(json.dumps([{"text": "red", "usage": {"input": 7}}]))
+
+    out = baseline.run(str(marker_workspace), str(questions), str(tmp_path / "runs"),
+                       script=str(script))
+    row = json.loads(out.read_text().strip())
+    assert row["answer"] == "red" and row["backend"] == "replay"
+    assert row["usage"] == {"input": 7} and row["render_px"][0] > 0
+
+
 def test_importers_parse_the_published_formats():
     from evals.import_bench import parse_hrbench, parse_vstar
 

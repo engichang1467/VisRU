@@ -31,34 +31,31 @@ def dtype():
     return torch.float16 if device() == "cuda" else torch.float32
 
 
+def _pair(processor_cls: str, model_cls: str, name: str):
+    """(processor, model) from transformers, on the best device, in eval mode."""
+    import transformers
+
+    processor = getattr(transformers, processor_cls).from_pretrained(name)
+    model = getattr(transformers, model_cls).from_pretrained(name, dtype=dtype())
+    return processor, model.to(device()).eval()
+
+
 @functools.cache
 def detector():
     """OWLv2: open-vocabulary boxes from text queries."""
-    from transformers import Owlv2ForObjectDetection, Owlv2Processor
-
-    processor = Owlv2Processor.from_pretrained(DETECT_MODEL)
-    model = Owlv2ForObjectDetection.from_pretrained(DETECT_MODEL, dtype=dtype())
-    return processor, model.to(device()).eval()
+    return _pair("Owlv2Processor", "Owlv2ForObjectDetection", DETECT_MODEL)
 
 
 @functools.cache
 def segmenter():
     """SAM 2: masks from points, boxes, or marks."""
-    from transformers import Sam2Model, Sam2Processor
-
-    processor = Sam2Processor.from_pretrained(SEGMENT_MODEL)
-    model = Sam2Model.from_pretrained(SEGMENT_MODEL, dtype=dtype())
-    return processor, model.to(device()).eval()
+    return _pair("Sam2Processor", "Sam2Model", SEGMENT_MODEL)
 
 
 @functools.cache
 def video_segmenter():
     """SAM 2 with memory: one prompt on one frame, masks propagated through the rest."""
-    from transformers import Sam2VideoModel, Sam2VideoProcessor
-
-    processor = Sam2VideoProcessor.from_pretrained(SEGMENT_MODEL)
-    model = Sam2VideoModel.from_pretrained(SEGMENT_MODEL, dtype=dtype())
-    return processor, model.to(device()).eval()
+    return _pair("Sam2VideoProcessor", "Sam2VideoModel", SEGMENT_MODEL)
 
 
 class Embedder:

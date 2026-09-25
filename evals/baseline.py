@@ -109,25 +109,12 @@ def run(workspace: str, questions_path: str, out_dir: str = "evals/runs",
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--workspace", required=True)
-    parser.add_argument("--questions", required=True)
+    suite.add_run_args(parser)
     parser.add_argument("--out-dir", default="evals/runs")
-    parser.add_argument("--model", default=None, help="defaults to visru.toml")
-    parser.add_argument("--backend", default=None,
-                        help="anthropic | openai_compatible; defaults to visru.toml. "
-                            "Pin the provider in --model for a hosted open model, "
-                            "e.g. Qwen/Qwen3-VL-30B-A3B-Instruct:novita")
-    parser.add_argument("--config", default=None,
-                        help="visru.toml for this arm; defaults to the workspace's")
     parser.add_argument("--frames", type=int, default=12,
                         help="contact-sheet frames for video questions")
-    parser.add_argument("--sample", type=int, default=None,
-                        help="fixed-seed subset of labelled questions, as evals.agent")
-    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true",
                         help="render every question's image but call no API")
-    parser.add_argument("--script", default=None,
-                       help="replay this turn script instead of calling a model")
     args = parser.parse_args(argv)
 
     out = run(args.workspace, args.questions, args.out_dir, args.model,

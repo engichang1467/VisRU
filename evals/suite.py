@@ -92,6 +92,24 @@ def select(questions: list[Question], sample: int | None,
     return [q for q in labelled if q.id in keep]
 
 
+def add_run_args(parser: argparse.ArgumentParser) -> None:
+    """The arguments every eval arm takes: where, which questions, which model."""
+    parser.add_argument("--workspace", required=True)
+    parser.add_argument("--questions", required=True)
+    parser.add_argument("--model", default=None, help="defaults to visru.toml")
+    parser.add_argument("--backend", default=None,
+                        help="anthropic | openai_compatible; defaults to visru.toml. "
+                             "Pin the provider in --model for a hosted open model, "
+                             "e.g. Qwen/Qwen3-VL-30B-A3B-Instruct:novita")
+    parser.add_argument("--config", default=None,
+                        help="visru.toml for this arm; defaults to the workspace's")
+    parser.add_argument("--sample", type=int, default=None,
+                        help="fixed-seed subset of labelled questions")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--script", default=None,
+                        help="replay this turn script instead of calling a model")
+
+
 def resolve(registry, asset: str) -> str:
     """A question names a file; the tools need an asset ID."""
     if asset.startswith(("im_", "vid_")):

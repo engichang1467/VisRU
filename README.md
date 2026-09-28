@@ -571,7 +571,7 @@ The system prompt in `agent/prompts/system.md` should state these rules plainly:
 
 LIVR adds K new tokens to the vocabulary and trains them in two stages. In Stage 1, a modified attention mask stops prompt and answer tokens from attending to image tokens, so visual information can only reach the answer through the latents. Stage 2 restores the normal causal mask so the model learns to use the image tokens and the latents together. The loss is on answer tokens only. There are no helper images, boxes, or chain-of-thought targets, which fits the ledger: a verified, correct claim is exactly an answer-level label.
 
-The paper's defaults, kept fixed across its tasks: K = 16 unshared latents, a 4:6 split of Stage 1 to Stage 2 epochs, LoRA on attention and MLP blocks, frozen vision encoder and projector, and only the new embedding rows unfrozen. Training uses LoRA rank 16, alpha 32, dropout 0.05, AdamW with weight decay 0.01, and an effective batch of 8 (batch 1, 8 accumulation steps). Take the learning rate from the paper's appendix.
+The paper's defaults, kept fixed across its tasks: K = 16 unshared latents, a 4:6 split of Stage 1 to Stage 2 epochs, LoRA on attention and MLP blocks, frozen vision encoder and projector, and only the new embedding rows unfrozen. Training uses LoRA rank 16, alpha 32, dropout 0.05, AdamW with weight decay 0.01, and an effective batch of 8 (batch 1, 8 accumulation steps), learning rate 1e-4 with 5% linear warmup and cosine decay, restarted at the start of each stage.
 
 **Scope.** LIVR re-encodes image tokens the vision encoder already produced. It cannot recover detail lost to downsampling, so `view` still does the work on small objects in large images. The paper's gains depend on the backbone. On Qwen2.5-VL-3B the largest are on functional correspondence (+13.0) and jigsaw (+12.0). On Qwen3-VL-4B they are on functional correspondence (+8.9) and relative reflectance (+6.0), with jigsaw at only +2.0. The gain on V* is small (78.5 to 80.1 on Qwen2.5-VL-7B). In visru, expect it to matter most on multi-image steps: comparing frames across a failure window, matching views in Phase 4, and reading an `overlay` against its source.
 
@@ -582,7 +582,7 @@ The paper's defaults, kept fixed across its tasks: K = 16 unshared latents, a 4:
 <|latent_0|> ... <|latent_15|>
 ```
 
-A Stage 2 model runs with an ordinary causal mask, so inference needs no custom attention. `backends/openai_compat.py` inserts the latent tokens in the chat template and vLLM serves the merged LoRA unchanged.
+A Stage 2 model runs with an ordinary causal mask, so inference needs no custom attention. `backends/openai_compat.py` inserts the latent tokens in the chat template. vLLM cannot load the adapter itself (LoRA adapters can no longer add vocabulary rows, and it rejects trained embedding rows), so merge the LoRA and the new embedding rows into a full checkpoint and serve that.
 
 **Mask.** The paper's bottleneck generalizes to one rule per image: only that image's own tokens and its latents may attend to it. The latents still see the task and earlier turns, which the paper found necessary (blocking latents from the prompt cost about 2.5 points on localization).
 
@@ -603,7 +603,7 @@ def bottleneck_mask(n: int, groups: list[tuple[torch.Tensor, torch.Tensor]]) -> 
     return m
 ```
 
-Flash-attention does not accept an arbitrary mask. Convert this to an additive 4D mask for SDPA, or express it as a FlexAttention `mask_mod`. Latents take ordinary text positions in Qwen's M-RoPE.
+Flash-attention does not accept an arbitrary mask, and the Hugging Face Qwen3-VL model does not support FlexAttention, so pass this as a 4D mask with SDPA. Compute `position_ids` first from the 2D padding mask and pass them in, because the M-RoPE index code reads the attention mask as 2D. Latents take ordinary text positions in Qwen's M-RoPE.
 
 **Training data.** `training/export.py` produces two formats from verified, correct trajectories:
 

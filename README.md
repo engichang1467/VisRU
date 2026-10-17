@@ -35,7 +35,7 @@ Not inspected at native scale: frames 0 to 1100.
 ## Architecture
 
 <p align="center">
-  <img src="img/visru-architect.png" alt="VisRU Architecture">
+  <img src="https://raw.githubusercontent.com/engichang1467/VisRU/main/img/visru-architect.png" alt="VisRU Architecture">
 </p>
 
 **CLI and project context.** A session starts in the terminal. Each workspace can carry a `VISRU.md` with domain context: camera intrinsics, class definitions, what counts as a defect, known failure modes, unit conventions. The harness loads it into the system prompt, the way Claude Code loads `CLAUDE.md`.

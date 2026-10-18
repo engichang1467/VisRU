@@ -150,7 +150,7 @@ To switch models without a `visru.toml`, use `--backend`, `--model` and `--base-
 
 ```bash
 # Method 1
-visru run sample_data --task "..." --backend openai --model gpt-5.4-2026-03-05
+visru run sample_data --task "..." --backend openai --model gpt-5.4-2026-03-05 --base-url "https://api.openai.com/v1"
 
 # Method 2
 VISRU_BACKEND=openai_compatible VISRU_BASE_URL=http://localhost:23203/v1 \

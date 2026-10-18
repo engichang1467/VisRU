@@ -145,18 +145,51 @@ def test_the_trajectory_path_is_printed_even_when_nothing_was_reported(indexed,
 
 
 def test_init_drafts_visru_md_and_never_overwrites_it(marker_workspace):
-    first = runner.invoke(app, ["init", str(marker_workspace)])
+    first = runner.invoke(app, ["init", str(marker_workspace), "--no-model"])
     assert first.exit_code == 0, first.output
     text = (marker_workspace / "VISRU.md").read_text()
     assert "`marker.png`, 4032x3024" in text and "## Domain notes" in text
 
     (marker_workspace / "VISRU.md").write_text("hand-edited")
-    second = runner.invoke(app, ["init", str(marker_workspace)])
+    second = runner.invoke(app, ["init", str(marker_workspace), "--no-model"])
     assert second.exit_code == 0, second.output
     assert (marker_workspace / "VISRU.md").read_text() == "hand-edited"
     assert "## Assets" in (marker_workspace / "VISRU.md.new").read_text()
 
 
 def test_init_refuses_a_missing_directory(tmp_path):
-    result = runner.invoke(app, ["init", str(tmp_path / "nope")])
+    result = runner.invoke(app, ["init", str(tmp_path / "nope"), "--no-model"])
     assert result.exit_code != 0
+
+
+def test_init_survey_claims_land_in_visru_md(marker_workspace, tmp_path):
+    reg = Registry(marker_workspace)
+    reg.scan()
+    asset = reg.list(kind="image")[0].id
+    turns = viewing(asset, 1) + [
+        {"text": "Reporting.",
+         "calls": [{"name": "submit_report", "arguments": {"claims": [
+             {"claim_id": "c_1", "text": "A red square on a dark background.",
+              "status": "supported", "evidence": ["a_0001"]},
+             {"claim_id": "c_2", "text": "Probably a synthetic test image.",
+              "status": "hypothesis"}]}}]}]
+
+    result = runner.invoke(app, ["init", str(marker_workspace), "--backend", "replay",
+                                 "--script", script_at(tmp_path / "s.json", turns)])
+
+    assert result.exit_code == 0, result.output
+    text = (marker_workspace / "VISRU.md").read_text()
+    assert "- A red square on a dark background. (a_0001)" in text
+    unconfirmed = text[text.index("## Unconfirmed"):]
+    assert "Probably a synthetic test image." in unconfirmed
+    assert text.index("## Assets") < text.index("## Observed") < text.index("## Domain notes")
+
+
+def test_init_writes_facts_and_exits_non_zero_when_the_survey_never_reports(
+        marker_workspace, tmp_path):
+    result = runner.invoke(app, ["init", str(marker_workspace), "--backend", "replay",
+                                 "--script", script_at(tmp_path / "s.json", [])])
+
+    assert result.exit_code == 1
+    text = (marker_workspace / "VISRU.md").read_text()
+    assert "## Assets" in text and "## Observed" not in text

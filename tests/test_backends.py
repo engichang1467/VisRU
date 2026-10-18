@@ -231,3 +231,10 @@ def test_an_unknown_backend_names_the_ones_that_exist():
 def test_the_open_backend_loads():
     cfg = Config(model=ModelConfig(backend="openai_compatible"))
     assert load(cfg).name == "openai_compatible"
+
+
+def test_a_missing_anthropic_key_is_refused_before_any_request(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY is not set"):
+        load(Config(model=ModelConfig(backend="anthropic")))

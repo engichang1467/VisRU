@@ -145,7 +145,16 @@ def to_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
             for t in tools]
 
 
-def _token() -> str:
+def _token(base_url: str | None = None) -> str:
+    # OpenAI itself gets only an OpenAI key: an HF token sent there is refused, and
+    # sending it is a leak. A local vLLM takes anything, so only OpenAI is refused.
+    if "api.openai.com" in (base_url or ""):
+        key = os.environ.get("VISRU_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        if not key:
+            raise ValueError("OPENAI_API_KEY is not set. Export it (visru does not read "
+                             ".env files), or pick another --backend; `visru init "
+                             "--no-model` needs no key")
+        return key
     for name in ("VISRU_API_KEY", "HF_TOKEN", "OPENAI_API_KEY"):
         if os.environ.get(name):
             return os.environ[name]
@@ -174,7 +183,7 @@ class OpenAICompatBackend:
         else:
             from openai import OpenAI
 
-            self.client = OpenAI(base_url=cfg.model.base_url, api_key=_token())
+            self.client = OpenAI(base_url=cfg.model.base_url, api_key=_token(cfg.model.base_url))
         # Sampling knobs tuned for vLLM/Qwen. OpenAI's reasoning models refuse some
         # of them, so complete() prunes whatever the endpoint rejects, once.
         self.params: dict[str, Any] = {

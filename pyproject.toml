@@ -40,7 +40,7 @@ ocr = ["paddleocr>=2.8", "paddlepaddle>=2.6"]
 #   pip install git+https://github.com/facebookresearch/vggt
 # `python` tool: sandboxed kernel with workspace mounted read-only.
 kernel = ["jupyter-client>=8.6", "ipykernel>=6.29"]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+dev = ["pytest>=8.0", "ruff>=0.6", "build>=1.2", "twine>=5.1"]
 
 [project.scripts]
 visru = "visru.cli:main"

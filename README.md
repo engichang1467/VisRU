@@ -110,6 +110,10 @@ uv pip install -e ".[tools]"
 # Build the registry and embedding index for a folder
 visru index "$(pwd)/sample_data" --embed
 
+# Draft sample_data/VISRU.md (the model survey needs a key; add --no-model to skip it)
+export ANTHROPIC_API_KEY=...
+visru init sample_data
+
 visru run sample_data --task "In trial_01.mp4, when is the street-name sign legible?" --max-steps 30
 ```
 
@@ -119,8 +123,9 @@ visru run sample_data --task "In trial_01.mp4, when is the street-name sign legi
 claude mcp add -s user visru -- "$(pwd)/.venv/bin/python" -m visru.servers.vision_mcp \
   --workspace "$(pwd)/sample_data"
 
-# Claude Code reads CLAUDE.md, so use the visru context file under that name
-cp VISRU.md.example sample_data/CLAUDE.md
+# Claude Code reads CLAUDE.md, so point it at VISRU.md with an import
+visru init sample_data --no-model
+echo "@VISRU.md" > sample_data/CLAUDE.md
 cd sample_data/ && claude
 ```
 
@@ -139,7 +144,7 @@ inspect at native scale. Finish with submit_report.
 visru run sample_data --task "What store name is on the tall vertical neon sign?" --max-steps 20
 ```
 
-This uses the model in `visru.toml` (Anthropic by default; set `ANTHROPIC_API_KEY`). It prints the report and writes the trajectory, ledger, and an HTML report under `sample_data/.visru/`. Re-render a report with `visru report sample_data [session]`. Pass `--backend replay --script turns.json` to run the loop without API spend.
+This uses the model in `visru.toml` (Anthropic by default; export `ANTHROPIC_API_KEY`, since visru does not read `.env` files). It prints the report and writes the trajectory, ledger, and an HTML report under `sample_data/.visru/`. Re-render a report with `visru report sample_data [session]`. Pass `--backend replay --script turns.json` to run the loop without API spend.
 
 To switch models without a `visru.toml`, use `--backend`, `--model` and `--base-url` on `visru run`, or set `VISRU_BACKEND`, `VISRU_MODEL` and `VISRU_BASE_URL`. Flags override env vars, and env vars override `visru.toml`. `openai` is shorthand for `openai_compatible` pointed at `https://api.openai.com/v1`:
 
@@ -166,6 +171,15 @@ Open models still need their image limits (`patch`, `max_edge`, `max_visual_toke
 - Labels are 10x15 cm. Anything smaller is a different sticker.
 - Report findings per image ID. Measurements in pixels unless a ruler is visible.
 ```
+
+`visru run` appends the workspace's `VISRU.md` to the system prompt. `visru init <folder>` drafts one, the way `/init` drafts a `CLAUDE.md`:
+
+- **Assets** and **Other files**, read off the registry: filename groups with sizes, frame rates and durations, plus any non-media files (calibration, labels, metadata). Exact and free.
+- **Observed**, from a short model survey (about 15 steps over 1–2 assets per filename group): the domain, what each group shows, visible text, and what makes the images hard to read. Each line cites the artifact it came from. Guesses the pixels cannot confirm, such as the camera model, go under **Unconfirmed** for you to check or delete.
+- **Domain notes**, left blank for you: intrinsics, class definitions, defect criteria, units. The survey never fills these in.
+- **Rules**, the standing instructions from [`VISRU.md.example`](VISRU.md.example).
+
+`--no-model` skips the survey and spends nothing. If a `VISRU.md` already exists, `init` writes `VISRU.md.new` for you to diff instead of overwriting your edits. `init` takes the same `--backend`, `--model` and `--base-url` flags as `run`.
 
 ### Configuration
 

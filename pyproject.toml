@@ -1,6 +1,6 @@
 [project]
 name = "visru"
-version = "0.0.1"
+version = "0.1.1"
 description = "Agentic harness giving a vision-language model tools to search, zoom, measure, annotate, and verify over images and video"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -31,6 +31,8 @@ tools = [
     "timm>=1.0",
     "faiss-cpu>=1.8",
     "opencv-python-headless>=4.10",
+    "sentencepiece>=0.2",    # SigLIP tokenizer
+    "protobuf>=4.25",        # SigLIP tokenizer
 ]
 # Separate because PaddlePaddle pins conflict with torch stacks often enough.
 ocr = ["paddleocr>=2.8", "paddlepaddle>=2.6"]

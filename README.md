@@ -141,6 +141,19 @@ visru run sample_data --task "What store name is on the tall vertical neon sign?
 
 This uses the model in `visru.toml` (Anthropic by default; set `ANTHROPIC_API_KEY`). It prints the report and writes the trajectory, ledger, and an HTML report under `sample_data/.visru/`. Re-render a report with `visru report sample_data [session]`. Pass `--backend replay --script turns.json` to run the loop without API spend.
 
+To switch models without a `visru.toml`, use `--backend`, `--model` and `--base-url` on `visru run`, or set `VISRU_BACKEND`, `VISRU_MODEL` and `VISRU_BASE_URL`. Flags override env vars, and env vars override `visru.toml`. `openai` is shorthand for `openai_compatible` pointed at `https://api.openai.com/v1`:
+
+```bash
+# Method 1
+visru run sample_data --task "..." --backend openai --model gpt-5.4-2026-03-05
+
+# Method 2
+VISRU_BACKEND=openai_compatible VISRU_BASE_URL=http://localhost:23203/v1 \
+  VISRU_MODEL=Qwen/Qwen3-VL-32B-Thinking-FP8 visru run sample_data --task "..."
+```
+
+Open models still need their image limits (`patch`, `max_edge`, `max_visual_tokens`) set in `visru.toml`; see below.
+
 ### Project context
 
 `VISRU.md` carries whatever the model cannot see in the pixels:

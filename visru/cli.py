@@ -1,4 +1,3 @@
-from dataclasses import replace
 from pathlib import Path
 
 import typer
@@ -6,6 +5,7 @@ from rich.console import Console
 
 from visru import backends
 from visru.agent import loop as agent_loop
+from visru.config import with_model
 from visru.evidence import report as evidence_report
 from visru.tools import open_workspace
 from visru.workspace.registry import Registry
@@ -65,8 +65,12 @@ def run(
     workspace: str,
     task: str = typer.Option(..., "--task", help="what to find out"),
     max_steps: int = typer.Option(30, "--max-steps", help="hard ceiling on turns"),
-    backend: str | None = typer.Option(None, "--backend",
-                                       help="override visru.toml: anthropic | replay"),
+    backend: str | None = typer.Option(
+        None, "--backend",
+        help="override visru.toml and $VISRU_BACKEND: anthropic | openai | openai_compatible | replay"),
+    model: str | None = typer.Option(None, "--model", help="override visru.toml and $VISRU_MODEL"),
+    base_url: str | None = typer.Option(None, "--base-url",
+                                        help="openai_compatible endpoint; overrides $VISRU_BASE_URL"),
     script: str | None = typer.Option(None, "--script",
                                       help="JSON turn script, for --backend replay"),
 ) -> None:
@@ -83,8 +87,7 @@ def run(
     if not ctx.registry.assets:
         raise typer.BadParameter(f"no assets in {workspace}; run `visru index` first")
 
-    if backend:
-        ctx.cfg = replace(ctx.cfg, model=replace(ctx.cfg.model, backend=backend))
+    ctx.cfg = with_model(ctx.cfg, backend=backend, name=model, base_url=base_url)
     if script and ctx.cfg.model.backend != "replay":
         raise typer.BadParameter("--script only means something with --backend replay")
 

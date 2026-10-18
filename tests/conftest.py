@@ -114,3 +114,10 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "models" in item.keywords:
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def _no_visru_env(monkeypatch):
+    """A VISRU_* var in the developer's shell would silently reroute every config."""
+    for var in ("VISRU_BACKEND", "VISRU_MODEL", "VISRU_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)

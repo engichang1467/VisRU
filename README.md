@@ -2,6 +2,10 @@
   <img src="https://raw.githubusercontent.com/engichang1467/VisRU/main/img/visru-logo-acronym.png" alt="VisRU" width="360">
 </p>
 
+<p align="center">
+  <a href="https://pypi.org/project/visru/"><img src="https://img.shields.io/pypi/v/visru" alt="PyPI"></a>
+</p>
+
 # Visual Reasoning and Understanding
 
 **VisRU** (Visual Reasoning and Understanding) is an agentic harness that gives a vision-language model a workspace of images, video, and multi-view captures, plus tools to search, zoom, measure, annotate, and check its own conclusions. Every claim in its final answer links to the crop, mask, frame, or overlay that supports it.
@@ -106,6 +110,7 @@ In fp16, OWLv2, SAM 2, SigLIP, and Depth Anything V2 fit on one 24 GB GPU. VGGT 
 git clone git@github.com:engichang1467/VisRU.git && cd visru
 uv venv && source .venv/bin/activate
 uv pip install -e ".[tools]"
+uv pip install -e ".[ocr]"
 
 # Build the registry and embedding index for a folder
 visru index "$(pwd)/sample_data" --embed

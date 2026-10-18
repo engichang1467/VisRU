@@ -1,6 +1,6 @@
 import pytest
 
-from visru.config import load_config
+from visru.config import load_config, with_model
 from visru.geometry import fit_render_size
 
 
@@ -37,3 +37,23 @@ def test_typos_raise(tmp_path):
 def test_explicit_missing_path_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_config(tmp_path / "nope.toml")
+
+
+def test_env_picks_backend_without_toml(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VISRU_BACKEND", "openai")
+    monkeypatch.setenv("VISRU_MODEL", "gpt-x")
+    cfg = load_config()
+    assert cfg.model.backend == "openai_compatible"
+    assert cfg.model.base_url == "https://api.openai.com/v1"
+    assert cfg.model.name == "gpt-x"
+
+
+def test_explicit_base_url_beats_preset(tmp_path, monkeypatch):
+    (tmp_path / "visru.toml").write_text('[model]\nname = "from-toml"\n')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VISRU_MODEL", "from-env")
+    cfg = with_model(load_config(), backend="openai", base_url="http://localhost:8000/v1")
+    assert cfg.model.backend == "openai_compatible"
+    assert cfg.model.base_url == "http://localhost:8000/v1"
+    assert cfg.model.name == "from-env"  # env beats toml

@@ -1,10 +1,11 @@
 [project]
 name = "visru"
-version = "0.0.1"
+version = "0.2.0"
 description = "Agentic harness giving a vision-language model tools to search, zoom, measure, annotate, and verify over images and video"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 
 # Core: the harness, the MCP server, and the CPU-only tools (view, sample_frames,
 # annotate, overlay, ledger). Heavy model weights live in the [tools] extra.
@@ -30,14 +31,16 @@ tools = [
     "timm>=1.0",
     "faiss-cpu>=1.8",
     "opencv-python-headless>=4.10",
+    "sentencepiece>=0.2",    # SigLIP tokenizer
+    "protobuf>=4.25",        # SigLIP tokenizer
 ]
 # Separate because PaddlePaddle pins conflict with torch stacks often enough.
 ocr = ["paddleocr>=2.8", "paddlepaddle>=2.6"]
-# Phase 4, pulled in only when pointmaps are needed.
-geometry3d = ["vggt"]
+# Phase 4 pointmaps need vggt, which is not on PyPI (and PyPI rejects git deps):
+#   pip install git+https://github.com/facebookresearch/vggt
 # `python` tool: sandboxed kernel with workspace mounted read-only.
 kernel = ["jupyter-client>=8.6", "ipykernel>=6.29"]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+dev = ["pytest>=8.0", "ruff>=0.6", "build>=1.2", "twine>=5.1"]
 
 [project.scripts]
 visru = "visru.cli:main"
@@ -48,6 +51,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["visru"]
+
+[tool.hatch.build.targets.sdist]
+include = ["visru", "README.md", "LICENSE", "pyproject.toml"]
 
 [tool.ruff]
 line-length = 100

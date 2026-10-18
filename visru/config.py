@@ -1,5 +1,6 @@
 """Config loading. Defaults are the whole config; visru.toml only overrides."""
 
+import os
 import tomllib
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
@@ -71,8 +72,28 @@ def _apply(section: Any, overrides: dict[str, Any], name: str) -> Any:
     return replace(section, **overrides)
 
 
+_ENV = {"VISRU_BACKEND": "backend", "VISRU_MODEL": "name", "VISRU_BASE_URL": "base_url"}
+# Shorthand backend names: each expands to a real backend plus the fields it implies.
+PRESETS = {"openai": {"backend": "openai_compatible", "base_url": "https://api.openai.com/v1"}}
+
+
+def with_model(cfg: Config, **overrides: str | None) -> Config:
+    """Override [model] fields, expanding a preset backend name. None means unset."""
+    overrides = {k: v for k, v in overrides.items() if v}
+    if preset := PRESETS.get(overrides.get("backend")):
+        # An explicit base_url still beats the preset's; the backend name does not.
+        overrides = {**preset, **overrides, "backend": preset["backend"]}
+    return replace(cfg, model=replace(cfg.model, **overrides)) if overrides else cfg
+
+
 def load_config(path: str | Path | None = None) -> Config:
-    """Load visru.toml. Explicit path, else ./visru.toml, else built-in defaults."""
+    """Load visru.toml (explicit path, else ./visru.toml, else built-in defaults),
+    then apply $VISRU_BACKEND, $VISRU_MODEL and $VISRU_BASE_URL on top."""
+    env = {field: os.environ.get(var) for var, field in _ENV.items()}
+    return with_model(_load_toml(path), **env)
+
+
+def _load_toml(path: str | Path | None) -> Config:
     p = Path(path) if path else Path("visru.toml")
     if not p.is_file():
         if path is not None:

@@ -50,8 +50,16 @@ REPEAT_LIMIT = 4
 TRUNCATION_LIMIT = 3
 
 
-def system_prompt() -> str:
-    return PROMPT_PATH.read_text()
+CONTEXT_FILE = "VISRU.md"
+
+
+def system_prompt(root: Path | None = None) -> str:
+    """The base prompt, plus the workspace's VISRU.md when it has one."""
+    base = PROMPT_PATH.read_text()
+    local = root / CONTEXT_FILE if root else None
+    if local is None or not local.is_file():
+        return base
+    return f"{base}\n\n# Workspace context ({CONTEXT_FILE})\n\n{local.read_text()}"
 
 
 @dataclass
@@ -98,7 +106,7 @@ def run(task: str, ctx: ToolContext, backend: Backend, max_steps: int = 200,
 
     `tools` limits which tools the model is offered and may call; None means all.
     """
-    system = system_prompt() if system is None else system
+    system = system_prompt(ctx.root) if system is None else system
     context = Context(task=task, cfg=ctx.cfg, system=system)
     ctx.run_child, ctx.child_usage = _child_runner(backend), {}  # for `delegate`
     log = Trajectory(ctx.root, ctx.session)

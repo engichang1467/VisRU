@@ -206,3 +206,24 @@ def test_view_coordinates_map_back_to_source_through_the_artifact(tmp_path):
 def test_unknown_artifact_raises(tmp_path):
     with pytest.raises(KeyError):
         ArtifactStore(tmp_path).load("a_9999")
+
+
+# --- survey --------------------------------------------------------------
+def test_survey_facts_group_by_pattern_and_list_sidecars(workspace, make_video):
+    from visru.workspace import survey
+
+    (workspace / ".env").write_text("SECRET=1")
+    (workspace / "VISRU.md").write_text("old context")
+    (workspace / "pallet_03.jpg").write_bytes((workspace / "pallet_01.jpg").read_bytes()[:-1]
+                                              + b"\x00")  # same size, new bytes
+    make_video("ws/run_7.mp4", frames=20, fps=10)
+    reg = Registry(workspace)
+    reg.scan()
+
+    assert survey.pattern("sub/trial_014.mp4") == "sub/trial_<n>.mp4"
+    assert survey.sidecars(workspace) == ["notes.txt"]  # no .env, no VISRU.md, no media
+    text = survey.facts(reg)
+    assert "- 2 images `pallet_<n>.jpg`, 4032x3024" in text
+    assert "- 1 video `run_7.mp4`, 64x48, 20 frames @ 10 fps (2.0 s)" in text
+    assert "1 duplicate path" in text
+    assert "- `notes.txt`" in text and "SECRET" not in text

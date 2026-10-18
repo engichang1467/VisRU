@@ -115,6 +115,16 @@ def test_the_model_is_given_the_tools_and_the_prompt(ctx):
     names = {t["name"] for t in backend.tools[0]}
     assert "view" in names and "submit_report" in names
     assert "source-asset pixels" in backend.systems[0].lower()
+    assert "Workspace context" not in backend.systems[0]
+
+
+def test_the_workspace_visru_md_is_appended_to_the_prompt(ctx):
+    (ctx.root / "VISRU.md").write_text("All boxes are in millimetres.")
+    backend = Scripted()
+    run("look", ctx, backend, max_steps=1)
+
+    assert backend.systems[0].startswith(loop.PROMPT_PATH.read_text())
+    assert backend.systems[0].endswith("All boxes are in millimetres.")
 
 
 # --- errors are messages, not endings ------------------------------------

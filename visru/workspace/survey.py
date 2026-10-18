@@ -1,0 +1,83 @@
+"""What a workspace holds, as markdown: the registry half of `visru init`.
+
+Everything here is read off the registry and the folder listing, so it is exact
+and free. What the pictures show is the model's half, and lives elsewhere.
+"""
+
+import re
+from collections import defaultdict
+from pathlib import Path
+
+from visru.workspace.registry import Asset, Registry, _kind
+
+DIGITS = re.compile(r"\d+")
+
+
+def pattern(path: str) -> str:
+    """`rollouts/trial_014.mp4` -> `rollouts/trial_<n>.mp4`."""
+    p = Path(path)
+    return (p.parent / (DIGITS.sub("<n>", p.stem) + p.suffix)).as_posix()
+
+
+def groups(reg: Registry) -> dict[str, list[Asset]]:
+    """Assets keyed by filename pattern, so 1,800 frames read as one line."""
+    out: dict[str, list[Asset]] = defaultdict(list)
+    for asset in reg.list():
+        out[pattern(asset.path)].append(asset)
+    return dict(sorted(out.items()))
+
+
+def sidecars(root: Path) -> list[str]:
+    """Non-media files: where intrinsics, labels and metadata usually live.
+
+    Hidden paths are skipped — `.visru/` is our own state, and `.env` is not
+    something to copy into a prompt.
+    """
+    root = Path(root)
+    found = []
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root)
+        if (not path.is_file() or any(part.startswith(".") for part in rel.parts)
+                or _kind(path) or rel.name in {"VISRU.md", "VISRU.md.new"}):
+            continue
+        found.append(rel.as_posix())
+    return found
+
+
+def _sizes(assets: list[Asset]) -> str:
+    sizes = sorted({(a.width, a.height) for a in assets}, key=lambda s: s[0] * s[1])
+    if len(sizes) <= 3:
+        return ", ".join(f"{w}x{h}" for w, h in sizes)
+    (w0, h0), (w1, h1) = sizes[0], sizes[-1]
+    return f"{len(sizes)} sizes, {w0}x{h0} to {w1}x{h1}"
+
+
+def _group_line(key: str, assets: list[Asset]) -> str:
+    kind = assets[0].kind  # a pattern keeps its extension, so one kind per group
+    name = assets[0].path if len(assets) == 1 else key
+    line = f"- {len(assets)} {kind}{'s' if len(assets) > 1 else ''} `{name}`, {_sizes(assets)}"
+    if kind != "video":
+        return line
+    if len(assets) == 1:
+        a = assets[0]
+        return line + f", {a.frames} frames @ {a.fps:.3g} fps ({a.duration:.1f} s)"
+    fps = sorted({round(a.fps or 0, 3) for a in assets})
+    total = sum(a.duration or 0 for a in assets)
+    return line + f", {'/'.join(f'{f:g}' for f in fps)} fps, {total:.1f} s total"
+
+
+def facts(reg: Registry) -> str:
+    """The "Assets" and "Other files" sections of a generated VISRU.md."""
+    lines = ["## Assets", ""]
+    lines += [_group_line(k, v) for k, v in groups(reg).items()] or ["- none indexed"]
+    dupes = sum(len(a.paths) - 1 for a in reg.assets.values())
+    if dupes:
+        lines.append(f"- {dupes} duplicate path{'s' if dupes > 1 else ''} "
+                     f"(identical bytes share one asset ID)")
+    lines.append("- All coordinates are source-asset pixels.")
+
+    lines += ["", "## Other files", ""]
+    side = sidecars(reg.root)
+    lines += [f"- `{s}`" for s in side] or [
+        "- None found: no camera intrinsics, labels or metadata alongside the media."]
+    return "\n".join(lines) + "\n"

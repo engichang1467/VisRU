@@ -1,6 +1,6 @@
 [project]
 name = "visru"
-version = "0.1.1"
+version = "0.2.0"
 description = "Agentic harness giving a vision-language model tools to search, zoom, measure, annotate, and verify over images and video"
 readme = "README.md"
 requires-python = ">=3.11"

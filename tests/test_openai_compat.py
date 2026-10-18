@@ -163,3 +163,20 @@ def test_visual_token_drift_warns_once(caplog):
         backend._check_visual_tokens(messages, charged)
         backend._check_visual_tokens(messages, charged)
     assert sum("visual-token drift" in r.message for r in caplog.records) == 1
+
+
+def test_openai_gets_only_an_openai_key_and_a_missing_one_is_refused(monkeypatch):
+    import pytest
+
+    from visru.backends.openai_compat import _token
+
+    openai = "https://api.openai.com/v1"
+    for name in ("VISRU_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HF_TOKEN", "hf_secret")
+    with pytest.raises(ValueError, match="OPENAI_API_KEY is not set"):
+        _token(openai)
+    assert _token("http://localhost:8000/v1") == "hf_secret"  # vLLM/HF still work
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    assert _token(openai) == "sk-test"  # not the HF token

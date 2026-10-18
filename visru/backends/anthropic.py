@@ -129,6 +129,12 @@ def _response(message: Any) -> Response:
 def _client() -> Any:
     import anthropic
 
+    # Refuse here, before the loop starts, not as a traceback from the first request.
+    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+        raise ValueError("ANTHROPIC_API_KEY is not set. Export it (visru does not read "
+                         ".env files), or pick another --backend; `visru init --no-model` "
+                         "needs no key")
+
     # An org-scoped key must say which workspace to bill; a workspace-scoped key
     # already knows, and the header is absent. Same rule as evals/baseline.py.
     workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID")

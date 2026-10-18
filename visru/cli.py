@@ -61,6 +61,30 @@ def index(
 
 
 @app.command()
+def init(workspace: str) -> None:
+    """Index a folder and draft its VISRU.md. An existing one is never overwritten."""
+    from visru.workspace import survey
+
+    root = Path(workspace).expanduser().resolve()
+    if not root.is_dir():
+        raise typer.BadParameter(f"{root} is not a directory")
+
+    reg = Registry.load(root)
+    stats = reg.scan()
+    reg.save()
+    for line in stats.failed:
+        typer.secho(f"skipped {line}", fg="yellow", err=True)
+
+    out = root / "VISRU.md"
+    if out.exists():
+        out = root / "VISRU.md.new"
+        typer.secho(f"VISRU.md exists; wrote {out.name} to diff against it", fg="yellow",
+                    err=True)
+    out.write_text(survey.draft(reg))
+    typer.echo(f"{out} ({len(reg.assets)} assets)")
+
+
+@app.command()
 def run(
     workspace: str,
     task: str = typer.Option(..., "--task", help="what to find out"),

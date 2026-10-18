@@ -142,3 +142,21 @@ def test_the_trajectory_path_is_printed_even_when_nothing_was_reported(indexed,
                     "--max-steps", "3")
     assert "trajectory:" in flat(result)
     assert list((indexed / ".visru" / "trajectory").glob("*.jsonl"))
+
+
+def test_init_drafts_visru_md_and_never_overwrites_it(marker_workspace):
+    first = runner.invoke(app, ["init", str(marker_workspace)])
+    assert first.exit_code == 0, first.output
+    text = (marker_workspace / "VISRU.md").read_text()
+    assert "`marker.png`, 4032x3024" in text and "## Domain notes" in text
+
+    (marker_workspace / "VISRU.md").write_text("hand-edited")
+    second = runner.invoke(app, ["init", str(marker_workspace)])
+    assert second.exit_code == 0, second.output
+    assert (marker_workspace / "VISRU.md").read_text() == "hand-edited"
+    assert "## Assets" in (marker_workspace / "VISRU.md.new").read_text()
+
+
+def test_init_refuses_a_missing_directory(tmp_path):
+    result = runner.invoke(app, ["init", str(tmp_path / "nope")])
+    assert result.exit_code != 0

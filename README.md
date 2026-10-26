@@ -229,6 +229,22 @@ python -m evals.score --questions $Q evals/runs/baseline_*.jsonl \
 
 `--sample N --seed S` draws the same questions for every arm. Every arm accepts `--backend openai_compatible --config open.toml` to run against an open model. The scorer prints accuracy per arm and category, cost per question, and accuracy grouped by ledger status, which measures whether `verified` claims are actually more accurate than `supported` ones. Answers it cannot grade mechanically are marked `review`; settle them by adding `"correct": true` or `false` to the run file.
 
+### Results: baseline vs. full
+
+V* Bench, 100 of 191 questions, same model in both arms (`Qwen/Qwen3-VL-32B-Thinking-FP8`). The baseline is one pass on the frame downscaled to about 700x500. A question the agent never answered counts as wrong. [Full write-up](https://github.com/engichang1467/VisRU/wiki/Eval-Baseline-vs-Full).
+
+| | baseline | full |
+|---|---:|---:|
+| Correct (of 100) | 52 | **61** |
+| `direct_attributes` (62) | 31 (50%) | **42 (68%)** |
+| `relative_position` (38) | 21 (55%) | 19 (50%) |
+| Tool calls / question | 0 | 12.0 |
+| Input tokens / question | 461 | 49,019 |
+
+- The gain is all in `direct_attributes`, where small details are lost to downscaling and zooming recovers them. `relative_position` does not improve.
+- `verified` answers are right 88% of the time (24 answers, 95% interval 69-96%), against 57% for `supported` (63 answers). The ledger status is a usable trust signal.
+- Not yet significant. Paired, full wins 24 questions and baseline wins 15 (sign test p ≈ 0.20). 8 questions ended `stuck` with no answer. Single run per arm, 91 questions not yet run.
+
 Custom question sets are JSONL:
 
 ```json
